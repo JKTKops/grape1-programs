@@ -44,6 +44,22 @@ is a jump to `WOZ_RESET`. If you want to use some of wozmon's code for your own 
 `WOZ_ECHO` is exposed. However exposing `WOZ_GETLINE` is a bit more complicated and not
 currently supported.
 
+`wozmon` will run if the system is in 32-bit mode, but still only interacts with addresses in
+the 16-bit range.
+
+## Porting to a New System
+
+To port to a new system named `sys`, do the following:
+
+1. Create a directory named `sys/`
+2. Create the config file, `sys/sys.cfg`. Copy a given one and read the comments, then
+    pick appropriate settings for your system.
+3. If you used `VARS_IN_BSS` or otherwise need a linker script, create it at `sys/sys.lds`.
+4. If you used `CUSTOM_ECHO`, create `echo.s` and implement `ECHO`.
+5. If you need any extra extensions enabled, create `sys/exts` and list them in the
+    normal argument format, for example `DW,EXOP,MD`. This should be the first line of the file,
+    other lines will be ignored.
+
 ## Console Control
 
 By default, the `WOZ_ECHO` function outputs to a console by writing characters to a specified

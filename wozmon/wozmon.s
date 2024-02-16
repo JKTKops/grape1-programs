@@ -1,7 +1,5 @@
 ; Port of Steve Wozniak's Woz Monitor to ETCa
 
-                .include "ss.cfg"
-
                 .ifdef VARS_IN_BSS
                 .bss
 VARS:           .space 136
@@ -197,8 +195,14 @@ WOZ_ECHO_0:     cmph    %rh0, 5         ; TCLF?
                 addh    %rh0, 5         ; TCLF => LF
                 ; free registers here: r0,r3,r4
                 .globl WOZ_ECHO
-WOZ_ECHO:       storeh  %rh0, DSP       ; output character
+WOZ_ECHO:       
+                .ifdef CUSTOM_ECHO
+                .include "echo.s"
+                .text
+                .else
+                storeh  %rh0, DSP       ; output character
                 ret
+                .endif
 
                 .ifdef  SET_VEC
 DOUBLEFAULT:    .byte 0x0F, 0x11        ; syscall instruction
