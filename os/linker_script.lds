@@ -10,7 +10,7 @@ MEMORY {
 
 SECTIONS
 {
-  .text : {
+  .text : ALIGN(8) {
     *(.text.startup .text.startup.*)
     *(SORT(.text.sorted.*))
     *(.text .text.*)
@@ -18,7 +18,7 @@ SECTIONS
   PROVIDE (__etext = .);
   .rodata : { *(.rodata .rodata.*) }
 
-  .bss : {
+  .bss : ALIGN(8) {
     __bss_start = .;
     *(.bss .bss.*)
     *(COMMON)
