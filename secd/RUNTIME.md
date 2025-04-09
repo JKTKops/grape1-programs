@@ -230,7 +230,7 @@ The first word of this object is metadata, containing a type tag,
 the size of the object in words (shifted left 2 bits), a flag bit
 known as the "static" bit, and then the least significant bit is set to 1.
 The size in words shifted left 2 bits is in fact the size in bytes,
-but the tag is used by the garbage collector.
+but the least significant bit is used by the garbage collector.
 After that, the fields are each themselves objects
 (either the null pointer or a pointer to another heap object)
 and the number of fields depends on the thing that was allocated.
@@ -279,7 +279,7 @@ Immediate objects have one payload field, the immediate value.
   object and the remaining fields are already-supplied arguments.
   The arity of a `PAP` object is determined dynamically using the stored
   size and the arity of the `FUN` object.
-* Tags 7-15 are reserved for primitive object types in future versions.
+* Tags 6-15 are reserved for primitive object types in future versions.
 * Tags above 16 may be used by the program for any allocated objects.
 
 Generally, in typed languages, tags will correspond to the constructors
@@ -294,6 +294,12 @@ collector. The single overhead word in every allocation contains all
 of the information that it needs. Future versions will strive to maintain
 this small overhead. As a result, future versions may lower the maximum
 allocation size (the current limit of 16KB is hopefully quite excessive).
+
+When an object is evacuated to the other semispace, the original copy's
+header word is overwritten with a forwarding pointer to the new copy.
+Since that pointer is necessarily aligned, its bottom bit is necessarily 0,
+which is how the garbage collector identifies already-evacuated objects.
+
 
 # Bytecode
 

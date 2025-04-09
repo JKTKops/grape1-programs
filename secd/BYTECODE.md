@@ -175,9 +175,10 @@ scratch).
 | `0x2B` | `I2C` | none | convert the INT object on top of the stack to a CHAR object |
 | `0x2C` | `B2I` | none | convert the BOOL object on top of the stack to an INT object |
 | `0x2D` | `C2I` | none | convert the INT object on top of the stack to a BOOL object |
-| `0x2E` | `MKOBJ` | `2:tag, 1:n` | `<F1:...:Fn:S> -> <OBJ(tag,F1,...,Fn):S>` |
-| `0x2F` | `MKCLO` | `3:CP, 1:A, 1:n` | `<V1:...:Vn:S> -> <FUN(CP,A,V1,...,Vn):S>` |
-| `0x30` | `ALLOC` | `2:size` | Allocate a heap object of the given size. Its tag must be set by `STAG` and its fields by `SFLD` or `SFLDW`. Used to support large objects. |
+| `0x2E` | `ALLOC` | `2:size` | Allocate a heap object of the given size. Its tag must be set by `STAG` and its fields by `SFLD` or `SFLDW`. Used to support large objects. |
+| `0x2F` | `MKOBJ` | `2:tag, 1:n` | `<F1:...:Fn:S> -> <OBJ(tag,F1,...,Fn):S>` |
+| `0x30` | `MKCLO` | `3:CP, 1:A, 1:n` | `<V1:...:Vn:S> -> <FUN(CP,A,V1,...,Vn):S>` |
+| `0x31` | `MKLCLO` | `3:CP, 1:A, 1:n` | `<V1:...:Vn-1:S> -> <FUN(CP,A,E,V1,...Vn-1):S>` |
 | `0x31` | `CLONE` | none | `<OBJ:S> -> <SHALLOWCOPY(OBJ):S>` |
 | `0x32` | `LFLD` | `1:n` | `<OBJ(_,...,Fn,...):S> -> <Fn:S>` "Load Field" |
 | `0x33` | `LFLDW` | `2:n` | `<OBJ(_,...,Fn,...):S> -> <Fn:S>` |
