@@ -18,18 +18,31 @@ form `<S, E, C, D>`. `S` is a stack of objects, written as
 of the currently-executing function. `C` is a bytecode offset.
 When a bytecode begins executing, `C` is always the offset of the bytecode
 itself. `D` is a stack of `(E,C,S)` triples forming a return stack.
-
 Transitions may refer to a subset of the machine state such as
 `<S> -> <nil:S>`, which is shorthand for `<S, E, C, D> -> <nil:S, E, C, D>`.
 
-Additionally, when a function is entered, a pointer to below the function's
-arguments on the stack is saved on the `D` stack (see `FASTAP` for example).
+In the current implementation, the S and D stacks are separate.
+They both exist in the same region and grow towards eachother.
+Stack overflows are not detected.
+
+When a function is entered, the current stack pointer is saved on the `D` stack,
+adjusted to point below the function's arguments (see `FASTAP` for example).
+Offsets from this saved stack pointer therefore access the function's arguments
+and the things pushed over them.
 The value `locals[0]` refers to the rightmost argument (which is the lowest
 stack object above the saved pointer). `locals[1]` refers to the next
 argument from the right, etc. If the function has arity `A`,
 then `locals[A]` is the first value pushed after the function began executing.
 There is also an array of global objects, whose size is specified in the
 bytecode header. It can have up to 2^16 items, which is hopefully excessive.
+The behavior of saving stack pointers and the use of `locals` may change in
+future versions. The current version enables fast-as-possible implementations
+of some combinators by simply manipulating the stack they are given and
+rapidly tail-calling something else, but requires the two stacks to be
+separate and prevents the use of a register to hold the top stack item
+(because it might be accessed via `LLCL` and therefore must be on the stack).
+In a future version, this all might change, slowing down some combinators
+in exchange for some implementation complexity and (hopefully) performance.
 
 Note that in the original presentation of the SECD machine, operations for
 application clear the `S` stack and save it on `D`. We preserve the `S`
@@ -117,7 +130,7 @@ are significantly faster than the equivalent sequences with `LLCL`
 | `0x13` | `SWAP` | none | `<x:y:S> -> <y:x:S>` |
 | `0x14` | `OVER` | none | `<x:y:S> -> <y:x:y:S>` |
 
-Some specialized versions of `LLCL` are defined
+Some specialized versions of `LLCL`, `LGBL`, `SLCL`, and `SGBL` are defined
 in the "Shortened Bytecodes" section.
 
 ## Arithmetic & Logic Bytecodes
@@ -445,46 +458,121 @@ which cover the vast, vast majority of function calls.
 | -----|------|---------------------------------|-----------|
 | `0x70` | `UAP` | none | As `EAP`, but without checking against `A` |
 | `0x71` | `UTL` | none | As `ETL`, but without checking against `A` |
-| `0x72` | `CAP` | `1:P` | See below. |
-| `0x73` | `CTL` | `1:P` | See below. |
-| `0x74` | `RET` | none | `<V:_,_,_,(S',E',C'):D> -> <V:S',E',C',D>` |
+| `0x72` | `RET` | none | `<V:_,_,_,(S',E',C'):D> -> <V:S',E',C',D>` |
+| `0x73` | `SYS` | `1:H` | Invoke system function with code `H`. |
+| `0x74` | `CAP1` | none | See below, `P = 1` |
+| `0x75` | `CAP2` | none | See below, `P = 2` |
+| `0x76` | `CAP3` | none | See below, `P = 3` |
+| `0x77` | `CAP4` | none | See below, `P = 4` |
+| `0x78` | `CAP5` | none | See below, `P = 5` |
+| `0x79` | `CAP6` | none | See below, `P = 6` |
+| `0x7A` | `CTL1` | none | See below, `P = 1` |
+| `0x7B` | `CTL2` | none | See below, `P = 2` |
+| `0x7C` | `CTL3` | none | See below, `P = 3` |
+| `0x7D` | `CTL4` | none | See below, `P = 4` |
+| `0x7E` | `CTL5` | none | See below, `P = 5` |
+| `0x7F` | `CTL6` | none | See below, `P = 6` |
 
-% something is fishy here
-% i'm not sure how to actually implement CAP which may need to
-% apply a function and also regain control afterwards. I think it
-% might have to instead apply a provided closure which implements
-% the semantics in the bytecode, so that it can get access to the
-% technology of `UAP` and `UTL`. I think we would need to not
-% provide CAP or CTL and only provide CAP1, CAP2, ... etc.
-% Then internally we need closures that implement the case where
-% the arity was too low. We would need one closure per possible
-% difference. Each such closure would enter the function-like object
-% with `UAP` and then `CTL<DIFF>` to tail-call the result on the remaining
-% arguments. `CAP` would make a regular call to these
-% special closures while `CTL` would tail-call them.
-% `CAP 10` would then be equivalent to `CAP5; CAP5`.
-% `CAP`, I guess, could be implemented with another special closure
-% that takes a number on the stack and dynamically chains `CAP`
-% bytecodes? but this is obviously undesirable. Blegh.
+`UAP` and `UTL` provide uncurried closure application without arity checks;
+which can be useful for a language which checks arity statically.
 
-`CAP` and `CTL` provide curried (tail) calls as discussed in
-RUNTIME.md. The top object on the stack must be a closure or PAP to apply,
-and dynamically typed languages must ensure this before using these
-bytecodes.
+`RET` returns from a function, restoring the saved context and pushing
+the return value on top of that context's stack.
+
+`SYS` calls an interpreter service function with the given code, to provide
+things like IO or exiting. That service function uses the `S` stack if
+necessary.
+
+The `CAP` and `CTL` bytecode families apply function-like objects to
+arguments with a curried semantics.
 
 The arity of the closure (resp. PAP) is checked against `P`. If the arity
 is larger, a PAP is constructed which fixes the pointer to the original
 closure and the supplied arguments; this PAP is the result of the
 application. (The exact format of PAPs is not currently specified.
 You should not assume that there is a connection between PAP A, constructed
-from partially applying PAP B, and PAP B. You should also not assume that
+from partially applying PAP B, and PAP B. Neither should you assume that
 there is _not_ such a connection.)
 
 If the arity is exactly `P`, then the function-like object is entered.
-A closure is entered with the semantics of `EAP` or `ETL` as appropriate,
-except that the arity is not checked again. To enter a PAP, the fixed
-arguments in the PAP are pushed onto the stack in reverse order and
-the fixed closure is retrieved. This closure is then entered.
+A closure is entered as if by `UAP` or `UTL` as appropriate
+To enter a PAP, the fixed arguments in the PAP are pushed onto the stack
+in reverse order, and we proceed by dealing with the fixed closure instead
+of the PAP. This process is known as "zonking" a PAP.^1
+This closure is then entered.
 
-If the arity is less than `P`, then the function-like object is entered
-as if by `CAP` (regardless of whether `CAP` or `CTL` was used) 
+If the arity is less than `P`, the function-like object is entered
+and is assumed to return another function-like object. When it does,
+it is applied to the remaining arguments in a recursive fashion.
+
+The arity-is-greater and arity-is-equal cases are straightforward enough,
+but if one thinks about it for a bit, it becomes quite clear that it is
+very difficult to implement the arity-is-less case in a bytecode interpreter!
+The problem is that the function-like object must be entered
+and the bytecode must _continue to control the state transition after
+it returns_.
+
+Currently, the arity-is-less case is implemented by first determining if the
+function-like object is a PAP; if so, it is zonked before proceeding.
+Then, an operation like `FASTAP` or `FASTTL` (for `CAP` and `CTL` respectively)
+is performed to transfer control to an internal bytecode sequence that will
+regain control after the first application is complete.
+It is easier to understand if these cases are considered separately.
+
+In the `CAP` case, a dump frame is created for the current context, except
+the saved stack pointer is adjusted (by `P`) to be below the arguments that
+will be consumed by the operation. Then
+and control is transferred to an internal bytecode sequence. The stack and
+current environment pointer are unchanged. The internal bytecode sequence
+is `UAP; CTL<P-A>`. If we tried to apply a closure of arity 1 to 2 parameters,
+for example, the sequence will be `UAP; CTL1`. The use of `UAP` will cause
+the closure of arity 1 to be entered (and it will always be a closure,
+because we've zonked it), creating a new (second!) dump frame for the
+context whose code pointer is our internal bytecode sequence.
+When that closure returns, it will therefore return to our internal bytecode
+sequence, with the number of arguments that it consumed (1 in the example)
+removed from the stack and another function-like object pushed. The dump
+frame created at the start still exists. We then use `CTL1` to apply the
+function-like object just returned to the remaining argument.
+We use a curried call because that function-like object may have an
+arity other than 1, and we use a tail call because the context that we want
+it to return to is the context of the original `CAP` bytecode, with all
+of the `P` consumed arguments removed from the stack, which is precisely
+the context that we saved on the dump at the start.
+
+In the `CTL` case, however, we don't want that last `CTL1` to return to
+the context of the original `CTL` bytecode, because that bytecode is a
+tail calling bytecode. We want it to return to the context on the stack
+before we began. Well, that's easy! We simply don't create a new dump
+frame before transferring control to the internal bytecode sequence.
+Everything else is identical.
+
+The requirement of having a static internal bytecode sequence to invoke
+is precisely why we do not provide generic `CAP` or `CTL` bytecodes.
+If a program requires a `CAP8`, it can instead `CAP6`, then `CAP2`.
+(A compiler may, of course, guess a better decomposition.)
+
+## Shortened Bytecodes
+
+`LLCL LGBL SLCL SGBL LFLD SFLD LDCV` (maybe `LLCV`?)
+
+-----------------------------------------
+
+[^1]: This term comes by allusion from "zonking" in the implementation
+of a type inference engine. There, a half-baked type which still contains
+"holes" of unknown types contains a mutable reference in place of the holes.
+When the correct hole-filling type is discovered, it is written into the
+reference. "Zonking" walks over a type that might by half-baked and,
+wherever there is a reference that has been filled, replaces that ref by the
+type it was filled with. We are doing something similar here: the PAP
+represents an application with holes for several arguments.
+We are unpacking that half-baked application back onto the stack
+and then proceeding as if the original closure had been applied to all
+of the arguments (both the previously-fixed ones and the new ones)
+all at once. I believe I have also seen this referred to as "unwinding"
+a PAP, but I find this term confusing as it takes place on the stack
+and causes the stack to _grow_, whereas unwinding typically shrinks the stack.
+By extension, we can "zonk" any function-like object, having no effect on
+closures but zonking a PAP. The result of "zonking the application head"
+therefore will be a possibly-modified machine state where the application
+head is certainly a closure.
