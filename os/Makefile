@@ -1,4 +1,3 @@
-
 EXTENSIONS = INT,PM,MO1,MO2,FI,SAF,BYTE,DW,QW,DWAS,REX,ASP,EXOP
 ARCH_ARG = -march=base+$(EXTENSIONS)
 MODEL = -mcmodel=medany -mpw=d

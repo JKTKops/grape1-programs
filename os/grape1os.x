@@ -10,7 +10,7 @@ ENTRY(_start)
 SEARCH_DIR("/usr/local/etca-elf/lib");
 
 MEMORY {
-  ram (wx) : ORIGIN = 0x20, LENGTH = 2MB - 0x20
+  ram (wx) : ORIGIN = 0x20, LENGTH = 2M - 0x20
 }
 
 SECTIONS
@@ -85,7 +85,7 @@ SECTIONS
   }
   .plt            : { *(.plt) }
   .iplt           : { *(.iplt) }
-  .text           :
+  .text           : ALIGN(8)
   {
     *(.text.unlikely .text.*_unlikely .text.unlikely.*)
     *(.text.exit .text.exit.*)

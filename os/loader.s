@@ -251,13 +251,14 @@ bad_segment_align:
 unaligned_segment_msg:  .asciz "insufficiently aligned segment\n"
 
 ; ----------------------------------------------------
-; int validate_entry(void *entry)
+; int validate_entry(struct ELF_header_data *ehd)
 ;
 ; Validate the entry code pointer. For now, we only
 ; test that it's a pointer into low memory.
 ; ----------------------------------------------------
     .text
 validate_entry:
+    ldehd %ad0, %ad0, entry
     cmpd  %ad0, 0                 ; entry negative (high mem)?
     jn    1f                      ; if yes, fail
     movh  %ah0, 0                 ; otherwise return 0
@@ -274,7 +275,8 @@ validate_entry:
 bad_entry_msg:  .asciz "bad entry address\n"
 
 ; ----------------------------------------------------
-; | int load_segments(struct ELF_header_data *ehd)   |
+; | int load_segments(elf *elf,                      |
+; |                   struct ELF_header_data *ehd)   |
 ; |                                                  |
 ; | Using the (ehd->ph, ehd->phnum) array, load the  |
 ; | segments described by each header entry,         |
@@ -289,11 +291,11 @@ load_segments:
     mov   [%spd+8], %sq0          ; s0 is ph
     mov   [%spd+16], %sq1         ; s1 is phnum
     mov   [%spd+24], %bpq         ; bp is phentsz
-    mov   [%spd+32], %ad0         ; save ehd on the stack
+    mov   [%spd+32], %ad0         ; save ptr to elf data on the stack
 
-    ldehd %sd0, %ad0, ph          ; s0 = ehd->ph
-    ldehd %sx1, %ad0, phnum       ; s1 = ehd->phnum
-    ldehd %bpx, %ad0, phentsz     ; bp = ehd->phentsz
+    ldehd %sd0, %ad1, ph          ; s0 = ehd->ph
+    ldehd %sx1, %ad1, phnum       ; s1 = ehd->phnum
+    ldehd %bpx, %ad1, phentsz     ; bp = ehd->phentsz
       ; phentsz is small (32, as long as this is 32-bit elf) so bpx=bpd
     jmp   ls_loop_decr            ; enter loop at check
       ; this technically allows elf files with phnum = 0
@@ -304,7 +306,8 @@ load_segments:
     call  validate_segment        ; segment is well-placed?
     testd %ad0, %ad0              ; yes if ad0 is 0
     jnz   load_segments_return    ; otherwise return ad0
-    mov   %ad0, %sd0              ; a0 = ph
+    mov   %ad0, [%spd+32]         ; a0 = elf
+    mov   %ad1, %sd0              ; a1 = ph
     call  load_segment            ; load ph
 
     addd  %sd0, %bpd              ; (char*)ph += phentsz (aka ++ph)
@@ -509,9 +512,11 @@ load_elf:
 ; stack map:
 ;   0 ra
 ;   8 struct ELF_header_data ehd (24 bytes, alignup to 8 = 24)
+;  32 elf
 
-    sub   %spd, 32                ; change as needed
+    sub   %spd, 40                ; change as needed
     mov   [%spd], %lnq
+    mov   [%spd+32], %ad0         ; save elf
 
     lea   %ad1, [%spd + 8]        ; &ehd
     call  read_header             ; read_header(elf, &ehd)
@@ -523,47 +528,22 @@ load_elf:
     testd %ad0, %ad0              ; check for errors
     retnz                         ; return if errors
 
-    lea   %ad0, [%spd + 8]        ; &ehd
-    call  load_segments           ; load_segments(&ehd)
+    mov   %ad0, [%spd+32]         ; a0 = elf
+    lea   %ad1, [%spd + 8]        ; a1 = &ehd
+    call  load_segments           ; load_segments(elf, &ehd)
     testd %ad0, %ad0              ; check for errors
     retnz                         ; return if errors
     ;; note that if there was an error there, we've just left whatever
     ;; fraction of the process image we were able to load.
     ;; Fine for MVP -- but maybe not for future re-use in kernel!
 
-    ;; Another note for kernel: transferring control in this way
-    ;; does not work in a complete OS. Getting interrupted after
-    ;; setting int_* but before eret would be catastrophic.
-    ;; In an OS without virtual memory, most likely whatever requested
-    ;; this load has been moved to disk and the process image we are
-    ;; creating is intending to run immediately. But either way, we need
-    ;; to initialize its PCB, not its registers, and then use some code
-    ;; that transfers control to a swapped-in PCB (probably also used
-    ;; by the scheduler). Most likely, that code needs to temporarily
-    ;; disable interrupts so that we can do this transfer atomically.
-    movd  %lnd, 0
-    movd  %int_ret_priv, %lnd     ; set jump-to-unprivileged
-    movd  %lnd, [%spd + 8 + __EHD_entry] ; %ln = ehd.entry;
-    movd  %int_ret_pc, %lnd       ; set jump-to-unprivileged address
-
-    ; can't initialize a stack for the object program, because we don't know
-    ; where it wants its stack to be. But we can very well zero out all the
-    ; registers so that we don't accidentally leak pointers into the
-    ; "kernel."
-    movq  %rq0, 0
-    movq  %rq1, 0
-    movq  %rq2, 0
-    movq  %rq3, 0
-    movq  %rq4, 0
-    movq  %rq5, 0
-    movq  %rq6, 0
-    movq  %rq7, 0
-    movq  %rq8, 0
-    movq  %rq9, 0
-    movq  %rq10, 0
-    movq  %rq11, 0
-    movq  %rq12, 0
-    movq  %rq13, 0
-    movq  %rq14, 0
-    movq  %rq15, 0
-    eret                          ; Transfer control to proc image in user mode.
+    ;; Another note for kernel: transferring control here probably doesn't
+    ;; belong in this program if you're using it in a kernel. After loading
+    ;; the ELF file you probably want to instead finish setting up its PCB
+    ;; (e.g. with the correct instruction pointer) and then use whatever
+    ;; codepath your kernel uses for transferring control to a PCB.
+    ;; Here we use a "syscall" handler provided by shim.s which takes a pointer
+    ;; in %ad0 and transfers control to that pointer in user mode and with
+    ;; initialized registers.
+    movd  %ad0, [%spd + 8 + __EHD_entry]
+    syscall
