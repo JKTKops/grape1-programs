@@ -175,8 +175,8 @@ scratch).
 | `0x2B` | `I2C` | none | convert the INT object on top of the stack to a CHAR object |
 | `0x2C` | `B2I` | none | convert the BOOL object on top of the stack to an INT object |
 | `0x2D` | `C2I` | none | convert the INT object on top of the stack to a BOOL object |
-| `0x2E` | `MKOBJ` | `2:tag, 1:n` | `<Fn:...:F1:S> -> <OBJ(tag,F1,...,Fn):S>` |
-| `0x2F` | `MKCLO` | `3:CP, 1:A, 1:n` | `<Vn:...:V1:S> -> <FUN(CP,A,V1,...,Vn):S>` |
+| `0x2E` | `MKOBJ` | `2:tag, 1:n` | `<F1:...:Fn:S> -> <OBJ(tag,F1,...,Fn):S>` |
+| `0x2F` | `MKCLO` | `3:CP, 1:A, 1:n` | `<V1:...:Vn:S> -> <FUN(CP,A,V1,...,Vn):S>` |
 | `0x30` | `ALLOC` | `2:size` | Allocate a heap object of the given size. Its tag must be set by `STAG` and its fields by `SFLD` or `SFLDW`. Used to support large objects. |
 | `0x31` | `CLONE` | none | `<OBJ:S> -> <SHALLOWCOPY(OBJ):S>` |
 | `0x32` | `LFLD` | `1:n` | `<OBJ(_,...,Fn,...):S> -> <Fn:S>` "Load Field" |
@@ -195,6 +195,14 @@ change (e.g. because values in the source language are immutable), then these
 bytecodes are not appropriate. Instead, `CLONE` the object, and mutate the clone,
 or build a new object with `MKOBJ`, depending on how many fields need to be
 modified.
+
+The `MKOBJ` and `MKCLO` bytecodes construct objects. `MKOBJ` can construct any
+object, except a closure. (The first field of a closure is a literal integer,
+not a pointer, and there is no way to express this as an operand of `MKOBJ`.)
+`MKCLO` is provided to make closures specifically. In both cases, the fields
+of the object must be pushed **in reverse order**, because hardware stacks
+grow towards lower addresses and so this means that the fields on the stack
+are actually in the right order in memory.
 
 The `ALLOC` bytecode can be used to allocate large objects, but this should
 never be necessary. Something is deeply wrong if a closure captures so many
