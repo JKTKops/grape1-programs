@@ -154,7 +154,7 @@ which perform the checks.
 | `0x1E` | `SHL` | none | `<I2:I1:S> -> < I1<<I2 : S >` |
 | `0x1F` | `SHR` | none | `<I2:I1:S> -> < I1>>I2 : S >` |
 | `0x20` | `ASR` | none | `<I2:I1:S> -> < I1>>>I2 : S >` |
-| `0x21` | `INC` | `1:H, 1:V` | `locals[H] += V`, `V` is signed |
+| `0x21` | `INC` | `1:H, 1:V` | `locals[H] = (INT(I) -> INT(I+V))`, `V` is signed |
 | `0x22` | `AND` | none | `<I2:I1:S> -> <I1 bit I2:S>` |
 | `0x23` | `OR` | none | `<I2:I1:S> -> <I1\|I2:S>` |
 | `0x24` | `XOR` | none | `<I2:I1:S> -> <I1^I2:S>` |
@@ -179,13 +179,13 @@ scratch).
 | `0x2F` | `MKOBJ` | `2:tag, 1:n` | `<F1:...:Fn:S> -> <OBJ(tag,F1,...,Fn):S>` |
 | `0x30` | `MKCLO` | `3:CP, 1:A, 1:n` | `<V1:...:Vn:S> -> <FUN(CP,A,V1,...,Vn):S>` |
 | `0x31` | `MKLCLO` | `3:CP, 1:A, 1:n` | `<V1:...:Vn-1:S> -> <FUN(CP,A,E,V1,...Vn-1):S>` |
-| `0x31` | `CLONE` | none | `<OBJ:S> -> <SHALLOWCOPY(OBJ):S>` |
-| `0x32` | `LFLD` | `1:n` | `<OBJ(_,...,Fn,...):S> -> <Fn:S>` "Load Field" |
-| `0x33` | `LFLDW` | `2:n` | `<OBJ(_,...,Fn,...):S> -> <Fn:S>` |
-| `0x34` | `SFLD` | `1:n` | `<V:OBJ(_,...,Fn,...):S> -> <OBJ(_,...,V,...):S>` |
-| `0x33` | `SFLDW` | `2:n` | `<V:OBJ(_,...,Fn,...):S> -> <OBJ(_,...,V,...):S>` |
-| `0x34` | `LDCV` | `1:n` | `<S, E=FUN(_,_,...,Vn,...)> -> <Vn:S, E>` "Load Direct Captured Value" |
-| `0x35` | `LLCV` | `1:L, 1:n` | `<S, E> -> <LL(E,L,n):S, E>` "Load Linked Captured Value", see comments below. |
+| `0x32` | `CLONE` | none | `<OBJ:S> -> <SHALLOWCOPY(OBJ):S>` |
+| `0x33` | `LFLD` | `1:n` | `<OBJ(_,...,Fn,...):S> -> <Fn:S>` "Load Field" |
+| `0x34` | `LFLDW` | `2:n` | `<OBJ(_,...,Fn,...):S> -> <Fn:S>` |
+| `0x35` | `SFLD` | `1:n` | `<V:OBJ(_,...,Fn,...):S> -> <OBJ(_,...,V,...):S>` |
+| `0x36` | `SFLDW` | `2:n` | `<V:OBJ(_,...,Fn,...):S> -> <OBJ(_,...,V,...):S>` |
+| `0x37` | `LDCV` | `1:n` | `<S, E=FUN(_,_,...,Vn,...)> -> <Vn:S, E>` "Load Direct Captured Value" |
+| `0x38` | `LLCV` | `1:L, 1:n` | `<S, E> -> <LL(E,L,n):S, E>` "Load Linked Captured Value", see comments below. |
 
 Several specialized variations of `LFLD` and `LDCV` are defined in the
 "Shortened Bytecodes" section.
