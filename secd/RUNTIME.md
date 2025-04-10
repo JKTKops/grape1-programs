@@ -244,8 +244,8 @@ bits are a flag and a one.
 The flag indicates whether this object is "static," meaning it is
 statically allocated. Such objects should never be garbage collected.
 All objects on the heap will have a zero in this bit.
-Most statically allocated objects are closures for top-level values
-(including functions) included in the bytecode stream.
+Most statically allocated objects are for top-level values
+(including closures) included in the bytecode stream, see BYTECODE.md.
 Additionally, to reduce pressure on the garbage collector, the machine
 implementation provides several "canonical" objects for small integers
 as well as the values `true` and `false` (`#t` and `#f` in Lisp parlance).

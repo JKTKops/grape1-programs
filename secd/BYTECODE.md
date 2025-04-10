@@ -20,6 +20,8 @@ When a bytecode begins executing, `C` is always the offset of the bytecode
 itself. `D` is a stack of `(E,C,S)` triples forming a return stack.
 Transitions may refer to a subset of the machine state such as
 `<S> -> <nil:S>`, which is shorthand for `<S, E, C, D> -> <nil:S, E, C, D>`.
+When a transition does not specify what happens to `C`, it is implied that
+it is updated to point at the following bytecode.
 
 In the current implementation, the S and D stacks are separate.
 They both exist in the same region and grow towards eachother.
@@ -33,8 +35,6 @@ The value `locals[0]` refers to the rightmost argument (which is the lowest
 stack object above the saved pointer). `locals[1]` refers to the next
 argument from the right, etc. If the function has arity `A`,
 then `locals[A]` is the first value pushed after the function began executing.
-There is also an array of global objects, whose size is specified in the
-bytecode header. It can have up to 2^16 items, which is hopefully excessive.
 The behavior of saving stack pointers and the use of `locals` may change in
 future versions. The current version enables fast-as-possible implementations
 of some combinators by simply manipulating the stack they are given and
@@ -54,7 +54,7 @@ pointer.
 Several abbreviations are used throughout, usually for arguments to various
 bytecodes.
 
-* `BO` is a 16-bit bytecode offset, used for referring to static objects
+* `BO` is a 24-bit bytecode offset, used for referring to static objects
   placed directly in the bytecode stream.
 * `CP` is a 24-bit bytecode offset, usually used as a jump target.
 * `RO` is a 16-bit signed relative offset from the current bytecode.
@@ -81,11 +81,78 @@ The remaining listed values are arguments.
 
 `OBJ(D,...)` is an arbitrary object with tag `D` and remaining fields `...`.
 
-# Header
+# Format of a Bytecode Program
 
-TODO
+A bytecode program consists of 3 segments: the header,
+relocatable static data, and text.
 
-# Bytecodes
+The relocatable static data and text segments can contain data objects
+in the format described in RUNTIME.md. These objects **must** be 4-byte
+aligned.
+
+## Header
+
+The bytecode header is 3 words, in order: the length of the bytecode
+(including the header) **in bytes**, the length of the relocatable static
+data segment **in words**, and the offset at which execution should begin.
+(Presumably, in the text segment.)
+
+## Relocatable Static Data
+
+After the header, there is space for relocatable static data.
+Relocatable static data may contain pointers to other relocatable static
+data, in the form of a bytecode offset. (Like all bytecode offsets, it
+is an offset from the start of the file.)
+Relocatable static objects must be placed end-to-end such that the offset
+of an object plus the size in its header is the offset of the next
+relocatable static object.
+
+When the bytecode program is loaded, all objects in the relocatable static
+data segment are "relocated," meaning all bytecode offsets within the
+objects are updated to proper pointers.
+There are internal common, non-gc'd objects for the integers in the range
+[-1,9] and for both booleans. During relocation, whenever the most significant
+byte of an offset is not 0, that offset will be replaced by a pointer to
+one of these internal common objects according to the following table:
+
+| Field Value | Points to this object |
+|-------------|-----------------------|
+| `0xFF000000` | `BOOL(false)` |
+| `0xFF000001` | `BOOL(true)` |
+| `0xFF000002` | `INT(-1)` |
+| `0xFF000003` | `INT(0)` |
+| `0xFF000004` | `INT(1)` |
+| `0xFF000005` | `INT(2)` |
+| `0xFF000006` | `INT(3)` |
+| `0xFF000007` | `INT(4)` |
+| `0xFF000008` | `INT(5)` |
+| `0xFF000009` | `INT(6)` |
+| `0xFF00000A` | `INT(7)` |
+| `0xFF00000B` | `INT(8)` |
+| `0xFF00000C` | `INT(9)` |
+
+After this relocation, static data
+objects are indistinguishable from heap objects from the perspective of
+the program (although they can be accessed with `LDGW` and `LDGD` bytecodes).
+From the perspective of the runtime system, they will never be garbage
+collected because they are not heap-allocated.
+Note that static data can also exist in the text segment, but static data
+in the text segment will not be relocated.
+
+It is important to **set the static bit** in the headers of static data,
+**including static data in the text segment,**
+else garbage collections may cause them to be permanently lost.
+Additionally, static objects are immutable. Attempting to set a field
+of a static object to something heap-allocated would be problematic,
+because the static objects are not roots for garbage collection.
+
+## Text
+
+The remainder of the program is the text segment. This segment contains
+bytecodes and possibly static data that does not require relocations.
+Following are descriptions of each of the bytecodes.
+
+Take care that static data placed in the text segment is 4-byte aligned.
 
 ## Meta Bytecodes
 
@@ -117,20 +184,19 @@ are significantly faster than the equivalent sequences with `LLCL`
 | `0x06` | `LDH` | `1:H` | `<S> -> <H:S>`: push an `INT` object with value `H`. |
 | `0x07` | `LDW` | `2:W` | `<S> -> <W:S>`: like `LDH` |
 | `0x08` | `LDD` | `4:D` | `<S> -> <D:S>`: like `LDH` |
-| `0x09` | `LDBO` | `2:BO` | `<S> -> <OBJ:S>`: push a pointer (not the byte offset) to the object at byte offset `BO`. |
-| `0x0A` | `LLCL` | `1:H` | `<S> -> <locals[H]:S>` |
-| `0x0B` | `LGBL` | `2:W` | `<S> -> <globals[W]:S>` |
+| `0x09` | `LDGW` | `2:BO` | `<S> -> <OBJ:S>`: push a pointer (not the byte offset) to the object at byte offset `BO`. |
+| `0x0A` | `LDGD` | `3:BO` | `<S> -> <OBJ:S>`: push a pointer (not the byte offset) to the object at byte offset `BO`. |
+| `0x0B` | `LLCL` | `1:H` | `<S> -> <locals[H]:S>` |
 | `0x0C` | `SLCL` | `1:H` | `<x:S> -> <S>, locals[H]=x` |
-| `0x0D` | `SGBL` | `2:W` | `<x:S> -> <S>, globals[W]=x` |
-| `0x0E` | `LDE` | none | `<S, E> -> <E:S, E>` |
-| `0x0F` | `POP` | none | `<_:S> -> <S>` |
-| `0x10` | `DUP` | none | `<x:S> -> <x:x:S>` |
-| `0x11` | `DUPx1` | none | `<x:y:S> -> <x:y:x:S>` |
-| `0x12` | `DUPx2` | none | `<x:y:z:S> -> <x:y:z:x:S>` |
-| `0x13` | `SWAP` | none | `<x:y:S> -> <y:x:S>` |
-| `0x14` | `OVER` | none | `<x:y:S> -> <y:x:y:S>` |
+| `0x0D` | `LDE` | none | `<S, E> -> <E:S, E>` |
+| `0x0E` | `POP` | none | `<_:S> -> <S>` |
+| `0x0F` | `DUP` | none | `<x:S> -> <x:x:S>` |
+| `0x10` | `TUCK` | none | `<x:y:S> -> <x:y:x:S>` |
+| `0x11` | `TUCK2` | none | `<x:y:z:S> -> <x:y:z:x:S>` |
+| `0x12` | `SWAP` | none | `<x:y:S> -> <y:x:S>` |
+| `0x13` | `OVER` | none | `<x:y:S> -> <y:x:y:S>` |
 
-Some specialized versions of `LLCL`, `LGBL`, `SLCL`, and `SGBL` are defined
+Some specialized versions of `LLCL`, and `SLCL` are defined
 in the "Shortened Bytecodes" section.
 
 ## Arithmetic & Logic Bytecodes
@@ -180,12 +246,13 @@ scratch).
 | `0x30` | `MKCLO` | `3:CP, 1:A, 1:n` | `<V1:...:Vn:S> -> <FUN(CP,A,V1,...,Vn):S>` |
 | `0x31` | `MKLCLO` | `3:CP, 1:A, 1:n` | `<V1:...:Vn-1:S> -> <FUN(CP,A,E,V1,...Vn-1):S>` |
 | `0x32` | `CLONE` | none | `<OBJ:S> -> <SHALLOWCOPY(OBJ):S>` |
-| `0x33` | `LFLD` | `1:n` | `<OBJ(_,...,Fn,...):S> -> <Fn:S>` "Load Field" |
-| `0x34` | `LFLDW` | `2:n` | `<OBJ(_,...,Fn,...):S> -> <Fn:S>` |
-| `0x35` | `SFLD` | `1:n` | `<V:OBJ(_,...,Fn,...):S> -> <OBJ(_,...,V,...):S>` |
-| `0x36` | `SFLDW` | `2:n` | `<V:OBJ(_,...,Fn,...):S> -> <OBJ(_,...,V,...):S>` |
-| `0x37` | `LDCV` | `1:n` | `<S, E=FUN(_,_,...,Vn,...)> -> <Vn:S, E>` "Load Direct Captured Value" |
-| `0x38` | `LLCV` | `1:L, 1:n` | `<S, E> -> <LL(E,L,n):S, E>` "Load Linked Captured Value", see comments below. |
+| `0x33` | `UNPCK` | none | `<OBJ(tag,F1,...,Fn):S> -> <F1:...:Fn:S>` |
+| `0x34` | `LFLD` | `1:n` | `<OBJ(_,...,Fn,...):S> -> <Fn:S>` "Load Field" |
+| `0x35` | `LFLDW` | `2:n` | `<OBJ(_,...,Fn,...):S> -> <Fn:S>` |
+| `0x36` | `SFLD` | `1:n` | `<V:OBJ(_,...,Fn,...):S> -> <OBJ(_,...,V,...):S>` |
+| `0x37` | `SFLDW` | `2:n` | `<V:OBJ(_,...,Fn,...):S> -> <OBJ(_,...,V,...):S>` |
+| `0x38` | `LDCV` | `1:n` | `<S, E=FUN(_,_,...,Vn,...)> -> <Vn:S, E>` "Load Direct Captured Value" |
+| `0x39` | `LLCV` | `1:L, 1:n` | `<S, E> -> <LL(E,L,n):S, E>` "Load Linked Captured Value", see comments below. |
 
 Several specialized variations of `LFLD` and `LDCV` are defined in the
 "Shortened Bytecodes" section.
@@ -243,19 +310,19 @@ the compiler is free to chose. The `mk_inc` closure will certainly not be
 linked, and `LDCV 0` with it in `E` will produce the value of `n`.
 To construct the closure for the anonymous function, we can either produce
 a "direct" closure with `LDCV 0; MKCLO CP 1 1`, or a "linked" closure
-with `LDE; MKCLO CP 1 1`. Call the resulting closure `E'`.
+with `MKLCLO CP 1 1`. Call the resulting closure `E'`.
 When `E'` is entered, if it is direct, `LDCV 0` will produce the value of `n`.
 If it is linked, then `LLCV 1 0` will produce the value of `n`.
 
 The main performance consideration should be the size of the closures.
 In this case, they are the same, and we should prefer simply capturing
-`n` again. The bytecode sequence to do this is one byte longer, but the
+`n` again. The bytecode sequence to do this is two bytes longer, but the
 sequence to access the value whenever the resulting closure is called
 is one byte shorter, and uses the faster `LDCV`. The enhanced speed of
 `LDCV` also justifies direct closures if the size difference would be
-small. However, once captures in closures start become very nested,
+small. However, once captures in closures start to become very nested,
 every variable captured "direct" creates a linear growth in the size
-of the creature closures, and therefore a _quadratic_ growth in both
+of the created closures, and therefore a _quadratic_ growth in both
 runtime to construct the closures and memory residency. Linked closures,
 in contrast, would remain a constant size, and the execution time and
 memory residency remain linear in the complexity of the program itself.
@@ -291,8 +358,8 @@ add the relative offset `RO`.
 | `0x43` | `IFGT` | `2:RO` | `<V:S> -> <S>`, branch if the first field of `V` is more than `0`. |
 | `0x44` | `IFLE` | `2:RO` | `<V:S> -> <S>`, branch if the first field of `V` at most `0`. |
 | `0x45` | `IFGE` | `2:RO` | `<V:S> -> <S>`, branch if the first field of `V` at least `0`. |
-| `0x46` | `IF_F` | `2:RO` | `<V:S> -> <S>`, branch if `V` is the value `false`. |
-| `0x47` | `IF_NF` | `2:RO` | `<V:S> -> <S>`, branch if `V` is not the value `false`. |
+| `0x46` | `IF_F` | `2:RO` | `<V:S> -> <S>`, branch if `V` is the boolean `false`. |
+| `0x47` | `IF_NF` | `2:RO` | `<V:S> -> <S>`, branch if `V` is not the boolean `false`. |
 | `0x48` | `IFCEQ` | `2:RO` | `<V2:V1:S> -> <S>`, branch if `V1` and `V2` are equal immediate objects (they must not be `nil`). Does not work on strings, closures, etc. |
 | `0x49` | `IFCNE` | `2:RO` | `<V2:V1:S> -> <S>`, branch if `V1` and `V2` are not equal as immediate objects. |
 | `0x4A` | `IFCLT` | `2:RO` | `<V2:V1:S> -> <S>`, branch if `V1 <  V2`. |
@@ -301,8 +368,8 @@ add the relative offset `RO`.
 | `0x4D` | `IFCGE` | `2:RO` | `<V2:V1:S> -> <S>`, branch if `V1 >= V2`. |
 | `0x4E` | `IFSAME` | `2:RO` | `<V2:V1:S> -> <S>`, branch if `V1` and `V2` are the same object. |
 | `0x4F` | `IFDIFF` | `2:RO` | `<V2:V1:S> -> <S>`, branch if `V1` and `V2` are not the same object. |
-| `0x50` | `IF_F` | `2:RO` | `<V:S> -> <S>`, branch if `V` is the boolean `false`. |
-| `0x51` | `IF_NF` | `2:RO` | `<V:S> -> <S>`, branch if `V` is anything but the boolean `false`. |
+| `0x50` | `IF_NIL` | `2:RO` | `<V:S> -> <S>`, branch if `V` is `nil`. |
+| `0x51` | `IF_NNIL` | `2:RO` | `<V:S> -> <S>`, branch if `V` is not `nil`. |
 | `0x52` | `IF_FALSY` | `2:RO` | `<V:S> -> <S>`, branch if `V` is `nil` or if the first field of `V` is the word `0`. |
 | `0x53` | `IF_TRUTHY` | `2:RO` | `<V:S> -> <S>`, branch if `IF_FALSY` would not. |
 
@@ -317,10 +384,10 @@ as even a compiler which produces CPS code will need to use `ETL`.
 
 Several forms of tag-dependent code
 flow are provided for use by compilers as desired. They are
-`MATCH`, `MATCHU`, `UNLTAG`, and some more tag-aware branches.
+`MATCH`, `MATCHD`, `CHKTAG`, and some more tag-aware branches.
 I currently anticipate that statically typed
 source languages will primarily use `MATCH` and dynamic languages primarily
-`UNLTAG`, to implement dynamic type checks which halt with an error on failure.
+`CHKTAG`, to implement dynamic type checks which halt with an error on failure.
 (The error messages are of the form "Type error: expected X, got Y.")
 The tag-aware branches are an alternative to `MATCH` for
 types with few constructors.
@@ -337,7 +404,7 @@ object on top of the stack for more fine-grained control if needed.
 | `0x58` | `IFTEQ` | `1:tag, 2:RO` | `<OBJ(tag',...):S> -> no change`, Branch if `tag' == tag`. |
 | `0x59` | `IFTLT` | `1:tag, 2:RO` | `<OBJ(tag',...):S> -> no change`, Branch if `tag' < tag`. |
 
-The `MATCH` and `MATCHU` bytecodes both implement jump tables. In both cases,
+The `MATCH` and `MATCHD` bytecodes both implement jump tables. In both cases,
 the value to switch on is the value on top of the stack. In both cases,
 if that object is an immediate object, its field is used for the switch.
 Otherwise, the object's tag is used. Call the value to switch on `T`.
@@ -352,9 +419,9 @@ code pointer (so the most significant byte should be zero). The value
 index 0. `N` is the number of addresses in the jump table. Finally, each address
 `BO` is a 4-byte code pointer like `DEF`.
 
-If the tag to be matched falls outside the range `[LO,LO+N)`, control is
+If `T` falls outside the range `[LO,LO+N)`, control is
 transferred to `DEF`. Otherwise, control is transferred to the code pointer
-at index `T` of table.
+at index `T-LO` of table.
 
 `MATCH` operates as `MATCHD`, except that `LO` is always `0` if `T` is a
 field of an immediate object, and `16` if `T` is an object's tag.
@@ -379,7 +446,7 @@ If this function began at offset 0 (which is not possible),
 and assuming that `Left` is given the tag 16 and `Right` the tag 17,
 it could be implemented as
 ```
-0: MATCH 0 [0 2] [0 0 0 12] [0 0 0 ?] # padding, N=2, tgts 12 and 15
+0: MATCH 0 [0 2] [0 0 0 12] [0 0 0 15] # padding, N=2, tgts 12 and 15
 12: LFLD 0
 14: RET
 15: LFLD 1
@@ -390,7 +457,7 @@ significant space compared to `IFTEQ` or `IFTLT` branches. While the `MATCH`
 might be faster, this comes with tradeoffs in space. We could instead compile
 the above function as the very straightforward:
 ```
-0: IFTEQ 17 8
+0: IFTEQ 17 7
 4: LFLD 0
 6: RET
 7: LFLD 1
@@ -409,6 +476,41 @@ than moderately large search trees, but small search trees are still better.
 (There is a time cost here, because the target machine does not allow
 misaligned memory access.)
 
+### Another Example
+
+Consider the ML list data type:
+```ml
+type 'a list = [] | (::) of ('a * 'a list);;
+```
+
+This type has exactly one nullary constructor. For such types, the nullary
+constructor can be represented by `nil`, which saves both time and space.
+Each case alternative for `MATCH` takes four bytes, but `IF_NIL` takes only
+three. Additionally, when there are only two constructors, `IF_NIL` is the
+only test needed to resolve a pattern match, and is much faster than `MATCH`.
+
+For this function:
+```ml
+let rec sum acc xs = match xs with
+  | [] -> acc
+  | (x::xs') -> sum (x+acc) xs'
+```
+we can therefore generate this rather elegant bytecode:
+```
+0: 0x00 0x05 0x00 0x0B 0x00000802 # FUN(8,2)
+8: LLCL0        # list being matched
+9: DUP          # copy
+10: IF_NNIL +5  # if it is nil...
+13: LLCL1        # push acc
+14: RET          # and return it
+15: UNPCK       # otherwise, unpack :: ( x:xs':acc:xs:S )
+16: LLCL1       # push acc
+17: ADD         # add acc+x ( (acc+x):xs':acc:xs:S )
+18: FASTTL 0    # ( (acc+x):xs':S ) and invoke recursively
+```
+If code space is more of a concern than speed, the final `FASTTL` can also be
+implemented as `LDE; UTL`.
+
 ## Inter-Function Control Flow
 
 A large variety of function calling operations is provided. Operational
@@ -416,14 +518,11 @@ semantics are clarified below where necessary.
 
 | Byte | Name | Arguments ([byte count]:[name]) | Operation |
 | -----|------|---------------------------------|-----------|
-| `0x60` | `FASTAP` | `2:BO` | `<S,E,C,D> -> <S, *BO=FUN(CP,A,...), CP, (drop A S,E,C+3):D>` |
-| `0x61` | `FASTTL` | `2:BO` | `<S,_,_,(S',E',C'):D> -> <take A S ++ S', *BO=FUN(CP,A,...), CP, (S',E',C'):D>` |
+| `0x60` | `FASTAP` | `3:BO` | `<S,E,C,D> -> <S, *BO=FUN(CP,A,...), CP, (drop A S,E,C+3):D>` |
+| `0x61` | `FASTTL` | `3:BO` | `<S,_,_,(S',E',C'):D> -> <take A S ++ S', *BO=FUN(CP,A,...), CP, (S',E',C'):D>` |
 
 These two bytecodes provide fast calls to known functions. Provided is the
-offset of the static closure for that function. If the function could not be
-given a closure (perhaps because there was not enough space before the 64KB
-limit on static closures) then these bytecodes cannot be used. `EAP` or `ETL`
-can be used for minor increase in bytecode size and execution time.
+offset of the static closure for that function.
 
 The `FASTTL` bytecode provides a fast tail-call. The semantics are expressing
 that any activity that occurred on the stack between the saved stack pointer
@@ -563,7 +662,49 @@ If a program requires a `CAP8`, it can instead `CAP6`, then `CAP2`.
 
 ## Shortened Bytecodes
 
-`LLCL LGBL SLCL SGBL LFLD SFLD LDCV` (maybe `LLCV`?)
+`LLCL SLCL LFLD SFLD LDCV` (maybe `LLCV`?)
+| Byte | Name | Arguments ([byte count]:[name]) | Operation |
+| -----|------|---------------------------------|-----------|
+| `0x80` | `LLCL0` | none | as `LLCL 0` |
+| `0x81` | `LLCL1` | none | as `LLCL 1` |
+| `0x82` | `LLCL2` | none | as `LLCL 2` |
+| `0x83` | `LLCL3` | none | as `LLCL 3` |
+| `0x84` | `LLCL4` | none | as `LLCL 4` |
+| `0x85` | `LLCL5` | none | as `LLCL 5` |
+| `0x86` | `LLCL6` | none | as `LLCL 6` |
+| `0x87` | `LLCL7` | none | as `LLCL 7` |
+| `0x88` | `LLCL8` | none | as `LLCL 8` |
+| `0x89` | `LLCL9` | none | as `LLCL 9` |
+| `0x8A` | `SLCL0` | none | as `SLCL 0` |
+| `0x8B` | `SLCL1` | none | as `SLCL 1` |
+| `0x8C` | `SLCL2` | none | as `SLCL 2` |
+| `0x8D` | `SLCL3` | none | as `SLCL 3` |
+| `0x8E` | `SLCL4` | none | as `SLCL 4` |
+| `0x8F` | `SLCL5` | none | as `SLCL 5` |
+| `0x90` | `SLCL6` | none | as `SLCL 6` |
+| `0x91` | `SLCL7` | none | as `SLCL 7` |
+| `0x92` | `SLCL8` | none | as `SLCL 8` |
+| `0x93` | `SLCL9` | none | as `SLCL 9` |
+| `0x94` | `LFLD0` | none | as `LFLD 0` |
+| `0x95` | `LFLD1` | none | as `LFLD 1` |
+| `0x96` | `LFLD2` | none | as `LFLD 2` |
+| `0x97` | `LFLD3` | none | as `LFLD 3` |
+| `0x98` | `SFLD0` | none | as `SFLD 0` |
+| `0x99` | `SFLD1` | none | as `SFLD 1` |
+| `0x9A` | `SFLD2` | none | as `SFLD 2` |
+| `0x9B` | `SFLD3` | none | as `SFLD 3` |
+| `0x9C` | `LDCV0` | none | as `LDCV 0` |
+| `0x9D` | `LDCV1` | none | as `LDCV 1` |
+| `0x9E` | `LDCV2` | none | as `LDCV 2` |
+| `0x9F` | `LDCV3` | none | as `LDCV 3` |
+| `0xA0` | `LLCV10` | none | as `LLCV 1 0` |
+| `0xA1` | `LLCV11` | none | as `LLCV 1 1` |
+| `0xA2` | `LLCV12` | none | as `LLCV 1 2` |
+| `0xA3` | `LLCV13` | none | as `LLCV 1 3` |
+| `0xA4` | `LLCV20` | none | as `LLCV 2 0` |
+| `0xA5` | `LLCV21` | none | as `LLCV 2 1` |
+| `0xA6` | `LLCV22` | none | as `LLCV 2 2` |
+| `0xA7` | `LLCV23` | none | as `LLCV 2 3` |
 
 -----------------------------------------
 
