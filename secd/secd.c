@@ -683,6 +683,7 @@ int main(int argc, char *argv[]) {
 
   enum BYTECODE bc;
   word arg1, arg2;
+  OBJ operand1, operand2;
 
   while ( (bc = *C++) != BC_HLT ) {
     switch (bc) {
@@ -751,9 +752,69 @@ case BC_LLCL9:
 case BC_LLCL0:
   arg1 = 0;
 LLCL:
-  PUSH(Lcl(arg1));
+  PUSH(Lcl(arg1)); break;
 
-// implement case BC_LDE and add LDE bytecode to tests/simple_loads.bc
+case BC_SLCL:
+  arg1 = (*C++); goto SLCL;
+case BC_SLCL1:
+  arg1 = 1; goto SLCL;
+case BC_SLCL2:
+  arg1 = 2; goto SLCL;
+case BC_SLCL3:
+  arg1 = 3; goto SLCL;
+case BC_SLCL4:
+  arg1 = 4; goto SLCL;
+case BC_SLCL5:
+  arg1 = 5; goto SLCL;
+case BC_SLCL6:
+  arg1 = 6; goto SLCL;
+case BC_SLCL7:
+  arg1 = 7; goto SLCL;
+case BC_SLCL8:
+  arg1 = 8; goto SLCL;
+case BC_SLCL9:
+  arg1 = 9; goto SLCL;
+case BC_SLCL0:
+  arg1 = 0;
+SLCL:
+  POP(operand1);
+  Lcl(arg1) = operand1;
+  break;
+
+case BC_LDE:
+  PUSH((OBJ)E); break;
+
+case BC_POP:
+  Sp++; break;
+case BC_DUP:
+  operand1 = *Sp;
+  PUSH(operand1); break;
+
+case BC_TUCK:
+  Sp[-1] = Sp[0];
+  Sp[0]  = Sp[1];
+  Sp[1]  = Sp[-1];
+  --Sp;
+  break;
+
+case BC_TUCK2:
+  Sp[-1] = Sp[0];
+  Sp[0]  = Sp[1];
+  Sp[1]  = Sp[2];
+  Sp[2]  = Sp[-1];
+  --Sp;
+  break;
+
+case BC_SWAP:
+  operand1 = Sp[0];
+  Sp[0] = Sp[1];
+  Sp[1] = operand1;
+  break;
+
+case BC_OVER:
+  operand1 = Sp[1];
+  PUSH(operand1);
+  break;
 
     }
   }
