@@ -111,9 +111,11 @@ When the bytecode program is loaded, all objects in the relocatable static
 data segment are "relocated," meaning all bytecode offsets within the
 objects are updated to proper pointers.
 There are internal common, non-gc'd objects for the integers in the range
-[-1,9] and for both booleans. During relocation, whenever the most significant
-byte of an offset is not 0, that offset will be replaced by a pointer to
-one of these internal common objects according to the following table:
+[-1,9] and for both booleans. During relocation, any read offsets under
+`Field Value` in the following table be replaced by a pointer to
+to the corresponding internal common object.
+(Note that the most significant byte of each is `0xFF`, which cannot
+be confused for a real bytecode offset due to the 24-bit limit.)
 
 | Field Value | Points to this object |
 |-------------|-----------------------|
@@ -152,7 +154,7 @@ The remainder of the program is the text segment. This segment contains
 bytecodes and possibly static data that does not require relocations.
 Following are descriptions of each of the bytecodes.
 
-Take care that static data placed in the text segment is 4-byte aligned.
+Take care that static data placed in the text segment must be 4-byte aligned.
 
 ## Meta Bytecodes
 
@@ -662,7 +664,6 @@ If a program requires a `CAP8`, it can instead `CAP6`, then `CAP2`.
 
 ## Shortened Bytecodes
 
-`LLCL SLCL LFLD SFLD LDCV` (maybe `LLCV`?)
 | Byte | Name | Arguments ([byte count]:[name]) | Operation |
 | -----|------|---------------------------------|-----------|
 | `0x80` | `LLCL0` | none | as `LLCL 0` |

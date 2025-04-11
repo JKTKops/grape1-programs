@@ -35,6 +35,10 @@ typedef struct OBJ_HDR {
   uint16_t tag;
 } OBJ_HDR;
 
+// construct the correct word value for a dynamic header with the
+// given tag and size.
+#define HDR(tag, size) ((tag) << 16 | (size) << 2 | 1)
+
 /* Format of a generic heap object. */
 typedef struct HPOBJ {
   union {
@@ -62,8 +66,8 @@ typedef struct STRING {
 /* Format of a closure. */
 typedef struct FUN {
   OBJ_HDR hdr;
-  word code:24;
   word arity:8;
+  word code:24;
   word captures[0];
 } FUN;
 
@@ -71,13 +75,16 @@ typedef struct FUN {
 typedef struct PAP {
   OBJ_HDR hdr;
   HPOBJ *funlike; // either a FUN or another PAP or NULL.
+  byte arity;
+  byte count;
+  // there will be 2 bytes padding here
   word params[0];
 } PAP;
 
 typedef HPOBJ* OBJ; // NULL is the value nil
 
 struct SEMISPACE {
-  HPOBJ area[NUM_SEMISPACE_OBJS];
+  OBJ area[NUM_SEMISPACE_OBJS];
 };
 typedef struct HEAP {
   int current_semispace;
@@ -110,24 +117,38 @@ HEAP heap = { 0 };
 OBJ stack[NUM_STACK_OBJS];
 // Pin these to registers.
   // Hp points to the first unused word.
-OBJ  Hp    = heap.half[0].area;
+OBJ *Hp    = heap.half[0].area;
   // HpLim points to the last USABLE word.
   // gc when Hp would exceed HpLim.
-OBJ  HpLim = heap.half[0].area + NUM_SEMISPACE_OBJS;
+OBJ *HpLim = heap.half[0].area + NUM_SEMISPACE_OBJS;
+  // HpAlloc stores the amount of the allocation that caused a gc.
+  // Do not pin this, just reserve a word for it in upper RAM.
+  // In the C code we are storing the size in words, because it
+  // matches pointer arithmetic semantics in C, but in assembly we
+  // should store the size in bytes.
+word HpAlloc;
+#define INIT_SP (stack + NUM_STACK_OBJS)
   // Sp points to the top word on the stack, which is actually at
   // the lowest address. Initially nothing is on the stack, so it
   // points past the end of &stack.
-OBJ *Sp    = stack + NUM_STACK_OBJS;
-  // Dp points to the first unused frame on the dump.
+OBJ *Sp    = INIT_SP;
+  // Dp points to the topmost frame on the dump.
+  // Initially there is nothing here because we have to initialize
+  // this frame in main (empty S, null E, C points to a HLT bytecode
+  // somewhere in the program).
   // When Sp == Dp, the stack is exactly full (this is not checked).
 dump_frame_t *Dp = (void*)stack;
 // We might also want to pin a copy of the S in the top dump frame
-// to a register as this is the "locals" pointer.
-// OBJ *Lcl = Sp;
+// (less one) to a register as this is the "locals" pointer.
+OBJ *Lcl = INIT_SP-1;
   // The currently-executing function.
 FUN *E  = NULL;
   // Pointer to current byte.
 byte *C = code;
+
+#define PUSH(exp) *--Sp=(exp)
+#define POP(dst)  (dst)=*Sp++
+#define Lcl(n)    (Lcl[-(n)])
 
 void die(char *msg) {
   fputs(msg, stdout);
@@ -162,10 +183,10 @@ BOOL common_BOOLs[2] = {
 };
 #undef BOOL
 
-void gc() {
+void gc(void) {
   heap.current_semispace = 1 - heap.current_semispace;
   Hp = heap.half[heap.current_semispace].area;
-  OBJ Work = Hp; // points to first object in to-space not yet scavenged
+  OBJ Work = (OBJ)Hp; // points to first object in to-space not yet scavenged
   HpLim = Hp + NUM_SEMISPACE_OBJS;
 
   // gc roots: E, every word from Sp to &stack+sizeof(stack), dump roots
@@ -179,10 +200,14 @@ void gc() {
 
   // Now we scavange objects in to-space until there's nothing left to
   // scavenge.
-  while (Work < Hp) {
+  while (Work < (OBJ)Hp) {
     gc_scavenge(Work);
     Work += (Work)->hd.r.size;
   }
+
+  // Finally check if we were actually able to free sufficient memory.
+  if (HpLim - Hp >= HpAlloc) return;
+  die("out of memory");
 }
 
 // Given a pointer to something in from-space, either return the forwarding
@@ -218,9 +243,12 @@ OBJ gc_evacuate(OBJ obj) {
   // must be evacuated. How big is it?
   uint16_t size = obj->hd.r.size;
     // note that sizeof(OBJ) == sizeof(word) by defn
-  if (Hp + size > HpLim) die("out of memory");
-  newptr = Hp;
+  // This heap check is not necessary because while copying from a semispace
+  // that was not overfull, we cannot end up with an overfull semispace.
+  //if (Hp + size > HpLim) die("out of memory");
+  newptr = (OBJ)Hp;
   memcpy(Hp, obj, size*sizeof(OBJ));
+  Hp += size;
 update:
   obj->hd.f = newptr;
   return newptr;
@@ -303,7 +331,8 @@ void print_internal_objs() {
 void print_heap() {
   printf("**************** HEAP ****************\n");
   printf("Current semispace: %d\n", heap.current_semispace);
-  for (OBJ W = heap.half[heap.current_semispace].area; W < Hp; W += W->hd.r.size) {
+  for ( OBJ W = (OBJ)heap.half[heap.current_semispace].area
+      ; W < (OBJ)Hp; W += W->hd.r.size) {
     print_obj(W); printf("\n");
   }
   printf("************** END HEAP **************\n");
@@ -454,7 +483,46 @@ enum BYTECODE {
   BC_CTL5 = 0x7E,
   BC_CTL6 = 0x7F,
   /* Shortened bytecodes */
-
+  BC_LLCL0 = 0x80,
+  BC_LLCL1 = 0x81,
+  BC_LLCL2 = 0x82,
+  BC_LLCL3 = 0x83,
+  BC_LLCL4 = 0x84,
+  BC_LLCL5 = 0x85,
+  BC_LLCL6 = 0x86,
+  BC_LLCL7 = 0x87,
+  BC_LLCL8 = 0x88,
+  BC_LLCL9 = 0x89,
+  BC_SLCL0 = 0x8A,
+  BC_SLCL1 = 0x8B,
+  BC_SLCL2 = 0x8C,
+  BC_SLCL3 = 0x8D,
+  BC_SLCL4 = 0x8E,
+  BC_SLCL5 = 0x8F,
+  BC_SLCL6 = 0x90,
+  BC_SLCL7 = 0x91,
+  BC_SLCL8 = 0x92,
+  BC_SLCL9 = 0x93,
+  BC_LFLD0 = 0x94,
+  BC_LFLD1 = 0x95,
+  BC_LFLD2 = 0x96,
+  BC_LFLD3 = 0x97,
+  BC_SFLD0 = 0x98,
+  BC_SFLD1 = 0x99,
+  BC_SFLD2 = 0x9A,
+  BC_SFLD3 = 0x9B,
+  BC_LDCV0 = 0x9C,
+  BC_LDCV1 = 0x9D,
+  BC_LDCV2 = 0x9E,
+  BC_LDCV3 = 0x9F,
+  BC_LLCV10 = 0xA0,
+  BC_LLCV11 = 0xA1,
+  BC_LLCV12 = 0xA2,
+  BC_LLCV13 = 0xA3,
+  BC_LLCV20 = 0xA4,
+  BC_LLCV21 = 0xA5,
+  BC_LLCV22 = 0xA6,
+  BC_LLCV23 = 0xA7,
   /* nop */
   BC_NOP = 0xFF,
 };
@@ -527,9 +595,82 @@ void load_bytecode(char *path) {
     p++;
   }
 
+  // targetting my machine stuff: check that bytecode was honest
+  ungetc(fgetc(bcf), bcf);
   assert(feof(bcf));
   fclose(bcf);
 }
+
+uint16_t read16(void) {
+  uint16_t r = *C++;
+  r |= (*C++) << 8;
+  return r;
+}
+
+uint32_t read24(void) {
+  uint32_t r;
+  if ((word)C & 1) {
+    r = *C++;
+    r |= (*(uint16_t*)C) << 8;
+    C += 2;
+  } else {
+    r = (*(uint16_t*)C);
+    C += 2;
+    r |= (*C++) << 16;
+  }
+  return r;
+}
+
+uint32_t read32(void) {
+  uint32_t r;
+  if (((word)C & 3) == 0) {
+    r = *(uint32_t*)C;
+    C += 4;
+    return r;
+  }
+  if (((word)C & 1) == 0) {
+    r = *(uint16_t*)C;
+    C += 2;
+    r |= (*(uint16_t*)C) << 16;
+    C += 2;
+    return r;
+  }
+  // completely unaligned
+  r = *C++;
+  r |= (*(uint16_t*)C) << 8;
+  C += 2;
+  r |= (*C++) << 24;
+  return r;
+}
+
+uint32_t read32_aligned(void) {
+  assert(((word)C & 3) == 0);
+  uint32_t r = *(uint32_t*)C;
+  C += 4;
+  return r;
+}
+
+FUN *zonk(OBJ f) {
+  assert(f->hd.r.tag == TAG_FUN || f->hd.r.tag == TAG_PAP);
+  if (f->hd.r.tag == TAG_FUN) return (FUN*)f;
+
+  PAP *pap = (PAP*)f;
+  for (int i = pap->count - 1; i >= 0; --i) {
+    PUSH((OBJ)pap->params[i]);
+  }
+  return zonk(pap->funlike);
+}
+
+#define HPALLOC(n)                           \
+  do {                                       \
+    word __HPALLOC_amt = (n);                \
+    Hp += __HPALLOC_amt;                     \
+    if (Hp >= HpLim) {                       \
+      /* UNLIKELY */                         \
+      HpAlloc = __HPALLOC_amt;               \
+      gc();                                  \
+    }                                        \
+  } while(0)
 
 int main(int argc, char *argv[]) {
   assert(sizeof(*Dp) == 3*sizeof(OBJ));
@@ -538,19 +679,84 @@ int main(int argc, char *argv[]) {
   }
 
   print_internal_objs();
-  print_machine_state();
-
   load_bytecode(argv[1]);
 
-  while (*C != BC_HLT) {
-    switch (*C) {
+  enum BYTECODE bc;
+  word arg1, arg2;
 
-case BC_NOP:
-  ++C; break;
+  while ( (bc = *C++) != BC_HLT ) {
+    switch (bc) {
 
-case 
+case BC_NOP: break;
 
+case BC_NIL:
+  PUSH(0); break;
 
+case BC_I0:
+  PUSH((OBJ)&common_INTs[1]); break;
 
+case BC_I1:
+  PUSH((OBJ)&common_INTs[2]); break;
+
+case BC_BT:
+  PUSH((OBJ)&common_BOOLs[1]); break;
+
+case BC_BF:
+  PUSH((OBJ)&common_BOOLs[0]); break;
+
+case BC_LDW:
+  arg1 = read16();
+  goto LDINT;
+case BC_LDD:
+  arg1 = read32();
+  goto LDINT;
+case BC_LDH:
+  arg1 = *C++;
+LDINT:
+  HPALLOC(2);
+  Hp[-2] = (OBJ)HDR(TAG_INT, 2);
+  Hp[-1] = (OBJ)arg1;
+  PUSH((OBJ)(Hp-2));
+  break;
+
+case BC_LDGD:
+  arg1 = read24();
+  goto LDG;
+case BC_LDGW:
+  arg1 = read16();
+LDG:
+  PUSH((OBJ)(code + arg1));
+  break;
+
+case BC_LLCL:
+  arg1 = (*C++); goto LLCL;
+case BC_LLCL1:
+  arg1 = 1; goto LLCL;
+case BC_LLCL2:
+  arg1 = 2; goto LLCL;
+case BC_LLCL3:
+  arg1 = 3; goto LLCL;
+case BC_LLCL4:
+  arg1 = 4; goto LLCL;
+case BC_LLCL5:
+  arg1 = 5; goto LLCL;
+case BC_LLCL6:
+  arg1 = 6; goto LLCL;
+case BC_LLCL7:
+  arg1 = 7; goto LLCL;
+case BC_LLCL8:
+  arg1 = 8; goto LLCL;
+case BC_LLCL9:
+  arg1 = 9; goto LLCL;
+case BC_LLCL0:
+  arg1 = 0;
+LLCL:
+  PUSH(Lcl(arg1));
+
+// implement case BC_LDE and add LDE bytecode to tests/simple_loads.bc
+
+    }
   }
+
+  print_machine_state();
 }
