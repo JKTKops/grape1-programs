@@ -133,7 +133,14 @@ be confused for a real bytecode offset due to the 24-bit limit.)
 | `0xFF00000B` | `INT(8)` |
 | `0xFF00000C` | `INT(9)` |
 
-After this relocation, static data
+Static `INT`, `BOOL`, `CHAR`, `STRING`, and `FUN` objects do not have their
+fields relocated. For the first four, their fields are immediate and relocation
+would destroy them. For `FUN` objects, there should be no reason for a static
+closure to have any captured variables; since static closures are immutable,
+any captures of a static closure are statically known and should be accessed as
+such.
+
+After relocation, static data
 objects are indistinguishable from heap objects from the perspective of
 the program (although they can be accessed with `LDGW` and `LDGD` bytecodes).
 From the perspective of the runtime system, they will never be garbage
@@ -186,17 +193,18 @@ are significantly faster than the equivalent sequences with `LLCL`
 | `0x06` | `LDH` | `1:H` | `<S> -> <H:S>`: push an `INT` object with value `H`. |
 | `0x07` | `LDW` | `2:W` | `<S> -> <W:S>`: like `LDH` |
 | `0x08` | `LDD` | `4:D` | `<S> -> <D:S>`: like `LDH` |
-| `0x09` | `LDGW` | `2:BO` | `<S> -> <OBJ:S>`: push a pointer (not the byte offset) to the object at byte offset `BO`. |
-| `0x0A` | `LDGD` | `3:BO` | `<S> -> <OBJ:S>`: push a pointer (not the byte offset) to the object at byte offset `BO`. |
-| `0x0B` | `LLCL` | `1:H` | `<S> -> <locals[H]:S>` |
-| `0x0C` | `SLCL` | `1:H` | `<x:S> -> <S>, locals[H]=x` |
-| `0x0D` | `LDE` | none | `<S, E> -> <E:S, E>` |
-| `0x0E` | `POP` | none | `<_:S> -> <S>` |
-| `0x0F` | `DUP` | none | `<x:S> -> <x:x:S>` |
-| `0x10` | `TUCK` | none | `<x:y:S> -> <x:y:x:S>` |
-| `0x11` | `TUCK2` | none | `<x:y:z:S> -> <x:y:z:x:S>` |
-| `0x12` | `SWAP` | none | `<x:y:S> -> <y:x:S>` |
-| `0x13` | `OVER` | none | `<x:y:S> -> <y:x:y:S>` |
+| `0x09` | `CHR` | `1:C` | `<S> -> <chr(C):S>` push a `CHAR` object representing the character with value `C`. |
+| `0x0A` | `LDGW` | `2:BO` | `<S> -> <OBJ:S>`: push a pointer (not the byte offset) to the object at byte offset `BO`. |
+| `0x0B` | `LDGD` | `3:BO` | `<S> -> <OBJ:S>`: push a pointer (not the byte offset) to the object at byte offset `BO`. |
+| `0x0C` | `LLCL` | `1:H` | `<S> -> <locals[H]:S>` |
+| `0x0D` | `SLCL` | `1:H` | `<x:S> -> <S>, locals[H]=x` |
+| `0x0E` | `LDE` | none | `<S, E> -> <E:S, E>` |
+| `0x0F` | `POP` | none | `<_:S> -> <S>` |
+| `0x10` | `DUP` | none | `<x:S> -> <x:x:S>` |
+| `0x11` | `TUCK` | none | `<x:y:S> -> <x:y:x:S>` |
+| `0x12` | `TUCK2` | none | `<x:y:z:S> -> <x:y:z:x:S>` |
+| `0x13` | `SWAP` | none | `<x:y:S> -> <y:x:S>` |
+| `0x14` | `OVER` | none | `<x:y:S> -> <y:x:y:S>` |
 
 Some specialized versions of `LLCL`, and `SLCL` are defined
 in the "Shortened Bytecodes" section.
@@ -223,7 +231,7 @@ which perform the checks.
 | `0x1F` | `SHR` | none | `<I2:I1:S> -> < I1>>I2 : S >` |
 | `0x20` | `ASR` | none | `<I2:I1:S> -> < I1>>>I2 : S >` |
 | `0x21` | `INC` | `1:H, 1:V` | `locals[H] = (INT(I) -> INT(I+V))`, `V` is signed |
-| `0x22` | `AND` | none | `<I2:I1:S> -> <I1 bit I2:S>` |
+| `0x22` | `AND` | none | `<I2:I1:S> -> <I1&I2:S>` |
 | `0x23` | `OR` | none | `<I2:I1:S> -> <I1\|I2:S>` |
 | `0x24` | `XOR` | none | `<I2:I1:S> -> <I1^I2:S>` |
 
@@ -243,10 +251,10 @@ scratch).
 | `0x2B` | `I2C` | none | convert the INT object on top of the stack to a CHAR object |
 | `0x2C` | `B2I` | none | convert the BOOL object on top of the stack to an INT object |
 | `0x2D` | `C2I` | none | convert the INT object on top of the stack to a BOOL object |
-| `0x2E` | `ALLOC` | `2:size` | Allocate a heap object of the given size. Its tag must be set by `STAG` and its fields by `SFLD` or `SFLDW`. Used to support large objects. |
-| `0x2F` | `MKOBJ` | `2:tag, 1:n` | `<F1:...:Fn:S> -> <OBJ(tag,F1,...,Fn):S>` |
-| `0x30` | `MKCLO` | `3:CP, 1:A, 1:n` | `<V1:...:Vn:S> -> <FUN(CP,A,V1,...,Vn):S>` |
-| `0x31` | `MKLCLO` | `3:CP, 1:A, 1:n` | `<V1:...:Vn-1:S> -> <FUN(CP,A,E,V1,...Vn-1):S>` |
+| `0x2E` | `ALLOC` | `2:size` | Allocate a heap object of the given size and push it to the stack. Its tag must be set by `STAG` and its fields by `SFLD` or `SFLDW`. Used to support large objects. |
+| `0x2F` | `MKOBJ` | `1:n, 2:tag` | `<F1:...:Fn:S> -> <OBJ(tag,F1,...,Fn):S>` |
+| `0x30` | `MKCLO` | `1:n, 3:CP, 1:A` | `<V1:...:Vn:S> -> <FUN(CP,A,V1,...,Vn):S>` |
+| `0x31` | `MKLCLO` | `1:n, 3:CP, 1:A` | `<V1:...:Vn-1:S> -> <FUN(CP,A,E,V1,...Vn-1):S>` |
 | `0x32` | `CLONE` | none | `<OBJ:S> -> <SHALLOWCOPY(OBJ):S>` |
 | `0x33` | `UNPCK` | none | `<OBJ(tag,F1,...,Fn):S> -> <F1:...:Fn:S>` |
 | `0x34` | `LFLD` | `1:n` | `<OBJ(_,...,Fn,...):S> -> <Fn:S>` "Load Field" |
@@ -256,8 +264,10 @@ scratch).
 | `0x38` | `LDCV` | `1:n` | `<S, E=FUN(_,_,...,Vn,...)> -> <Vn:S, E>` "Load Direct Captured Value" |
 | `0x39` | `LLCV` | `1:L, 1:n` | `<S, E> -> <LL(E,L,n):S, E>` "Load Linked Captured Value", see comments below. |
 
-Several specialized variations of `LFLD` and `LDCV` are defined in the
-"Shortened Bytecodes" section.
+The bytecodes `I2B`, `I2C`, `B2I`, and `C2I` do not check the input type,
+they simply assume it. With the current internal representation, this means
+that `B2I` and `C2I` are equivalent, and all 4 operations are just shortened
+versions of `STAG`.
 
 The `SFLD` and `SFLDW` bytecodes mutate an object. They should be used with care!
 If the pointer to the mutated object might be shared, and only this object should
@@ -331,6 +341,9 @@ memory residency remain linear in the complexity of the program itself.
 This is especially important for compilers that do a CPS transformation,
 as continuations are a textbook source of nested variable capture.
 
+Several specialized variations of `LFLD` and `LDCV` are defined in the
+"Shortened Bytecodes" section.
+
 ## Intra-Function Control Flow
 
 A suite of branching bytecodes is provided, in both compare-to-zero
@@ -343,7 +356,7 @@ notion of "falsy" which includes `nil` and all immediate objects
 whose fields are the word `0`. (The integer 0, the boolean `false`,
 and the character `\0`.) It is not safe to use `IFEQ` or similar bytecodes
 when the top object of the stack might be `nil`. It is safe to use
-`IF_F`, `IF_NF`, `IF_SAME`, `IF_DIFF`, `IF_FALSY`, and `IF_TRUTHY`.
+`IFF`, `IFNF`, `IFSAME`, `IFDIFF`, `IFFALSY`, and `IFTRUTHY`.
 
 Branch targets are signed 16-bit relative
 offsets from the bytecode offset of the branching bytecode.
@@ -360,8 +373,8 @@ add the relative offset `RO`.
 | `0x43` | `IFGT` | `2:RO` | `<V:S> -> <S>`, branch if the first field of `V` is more than `0`. |
 | `0x44` | `IFLE` | `2:RO` | `<V:S> -> <S>`, branch if the first field of `V` at most `0`. |
 | `0x45` | `IFGE` | `2:RO` | `<V:S> -> <S>`, branch if the first field of `V` at least `0`. |
-| `0x46` | `IF_F` | `2:RO` | `<V:S> -> <S>`, branch if `V` is the boolean `false`. |
-| `0x47` | `IF_NF` | `2:RO` | `<V:S> -> <S>`, branch if `V` is not the boolean `false`. |
+| `0x46` | `IFF` | `2:RO` | `<V:S> -> <S>`, branch if `V` is the boolean `false`. |
+| `0x47` | `IFNF` | `2:RO` | `<V:S> -> <S>`, branch if `V` is not the boolean `false`. |
 | `0x48` | `IFCEQ` | `2:RO` | `<V2:V1:S> -> <S>`, branch if `V1` and `V2` are equal immediate objects (they must not be `nil`). Does not work on strings, closures, etc. |
 | `0x49` | `IFCNE` | `2:RO` | `<V2:V1:S> -> <S>`, branch if `V1` and `V2` are not equal as immediate objects. |
 | `0x4A` | `IFCLT` | `2:RO` | `<V2:V1:S> -> <S>`, branch if `V1 <  V2`. |
@@ -370,10 +383,10 @@ add the relative offset `RO`.
 | `0x4D` | `IFCGE` | `2:RO` | `<V2:V1:S> -> <S>`, branch if `V1 >= V2`. |
 | `0x4E` | `IFSAME` | `2:RO` | `<V2:V1:S> -> <S>`, branch if `V1` and `V2` are the same object. |
 | `0x4F` | `IFDIFF` | `2:RO` | `<V2:V1:S> -> <S>`, branch if `V1` and `V2` are not the same object. |
-| `0x50` | `IF_NIL` | `2:RO` | `<V:S> -> <S>`, branch if `V` is `nil`. |
-| `0x51` | `IF_NNIL` | `2:RO` | `<V:S> -> <S>`, branch if `V` is not `nil`. |
-| `0x52` | `IF_FALSY` | `2:RO` | `<V:S> -> <S>`, branch if `V` is `nil` or if the first field of `V` is the word `0`. |
-| `0x53` | `IF_TRUTHY` | `2:RO` | `<V:S> -> <S>`, branch if `IF_FALSY` would not. |
+| `0x50` | `IFNIL` | `2:RO` | `<V:S> -> <S>`, branch if `V` is `nil`. |
+| `0x51` | `IFNNIL` | `2:RO` | `<V:S> -> <S>`, branch if `V` is not `nil`. |
+| `0x52` | `IFFALSY` | `2:RO` | `<V:S> -> <S>`, branch if `V` is `nil` or if the first field of `V` is the word `0`. |
+| `0x53` | `IFTRUTHY` | `2:RO` | `<V:S> -> <S>`, branch if `IF_FALSY` would not. |
 
 A single `GOTO` operation which can jump anywhere in the program is provided.
 `GOTO` outside of the current function is presumed not to be useful,
@@ -400,33 +413,41 @@ object on top of the stack for more fine-grained control if needed.
 
 | Byte | Name | Arguments ([byte count]:[name]) | Operation |
 | -----|------|---------------------------------|-----------|
-| `0x55` | `MATCH` | `0-3: padding, 2:N, [4:BO]*` | `<V:S> -> <V:S>`. See pattern matching below.
-| `0x56` | `MATCHD` | `0-3: padding, 4:DEF, 2:LO, 2:N, [4:BO]*` | `<V:S> -> <V:S>`. See pattern matching below.
-| `0x57` | `CHKTAG` | `2:tag` | `<OBJ(tag,...):S> -> <OBJ:S>`, otherwise halt with an error. |
-| `0x58` | `IFTEQ` | `1:tag, 2:RO` | `<OBJ(tag',...):S> -> no change`, Branch if `tag' == tag`. |
-| `0x59` | `IFTLT` | `1:tag, 2:RO` | `<OBJ(tag',...):S> -> no change`, Branch if `tag' < tag`. |
+| `0x55` | `MATCH` | `0-3: padding, 2:N, [4:BO]*` | `<V:S> -> <V:S>`. See pattern matching below. |
+| `0x56` | `MATCHN` | `0-3: padding, 2:N, 4:NIL, [4:BO]*` | `<V:S> -> <V:S>`. See pattern matching below. |
+| `0x57` | `MATCHD` | `0-3: padding, 2:LO, 2:HI, 4:DEF, [4:BO]*` | `<V:S> -> <V:S>`. See pattern matching below. |
+| `0x58` | `MATCHND` | `0-3: padding, 2:LO, 2:HI, 4:NIL, 4:DEF, [4:BO]*` | `<V:S> -> <V:S>`. See pattern matching below. |
+| `0x59` | `CHKTAG` | `2:tag` | `<OBJ(tag,...):S> -> <OBJ:S>`, otherwise halt with an error. |
+| `0x5A` | `IFTEQ` | `1:tag, 2:RO` | `<OBJ(tag',...):S> -> no change`, Branch if `tag' == tag`. |
+| `0x5B` | `IFTLT` | `1:tag, 2:RO` | `<OBJ(tag',...):S> -> no change`, Branch if `tag' < tag`. |
 
-The `MATCH` and `MATCHD` bytecodes both implement jump tables. In both cases,
-the value to switch on is the value on top of the stack. In both cases,
-if that object is an immediate object, its field is used for the switch.
+The `MATCH{N,D}` bytecodes implement jump tables.
+For `MATCH` and `MATCHD`, the top value cannot be nil.
+For `MATCHN` and `MATCHND`, the `NIL` target is taken iff the top value
+on the stack is nil.
+In all other cases, the value to switch on is the value on top of the stack. 
+If that object is an immediate object, its field is used for the switch.
+(This feature might be removed if it turns out to be expensive and useless.)
 Otherwise, the object's tag is used. Call the value to switch on `T`.
 
-`MATCHD` can implement pattern matching in a dynamically typed language where
-tags to match on may not be anywhere near the tag-16 boundary, and matching on
-immediate values that cannot be proven to be close to zero. Immediately
-following the bytecode are the necessary number of 0 bytes to align the
-remaining arguments to a 4-byte offset boundary. `DEF` is then a 4-byte
+`MATCHD` can implement pattern matching in a dynamically typed language,
+or whenever else a default branch or generic range of tags is useful.
+Immediately following the bytecode are the necessary number of 0 bytes to align
+the remaining arguments to a 4-byte offset boundary. `DEF` is then a 4-byte
 code pointer (so the most significant byte should be zero). The value
 `LO` is the tag (or immediate) value that should correspond to jump table
-index 0. `N` is the number of addresses in the jump table. Finally, each address
+index 0. In the immediate case, `LO` (and `HI`) are treated as signed.
+`HI-LO+1` is the number of addresses in the jump table. Finally, each address
 `BO` is a 4-byte code pointer like `DEF`.
 
-If `T` falls outside the range `[LO,LO+N)`, control is
+If `T` falls outside the range `[LO,HI]`, control is
 transferred to `DEF`. Otherwise, control is transferred to the code pointer
 at index `T-LO` of table.
 
 `MATCH` operates as `MATCHD`, except that `LO` is always `0` if `T` is a
 field of an immediate object, and `16` if `T` is an object's tag.
+The value `N` is the number of labels in the table, and does not count
+`MATCHN`'s label for nil.
 No default label is given as the match must be statically proven to be
 complete. (For an ML-style language, the compiler can insert code to
 invoke an error routine for cases un-matched in the source program.)
