@@ -129,8 +129,8 @@ grammar = r"""
   chr: /CHR/ "'" /[^\\]|\\\d+/ "'" // very awk but wcyd
   mkobj: /MKOBJ/ INT INT
   mkclo: MKCLO INT LABEL INT
-  match: MATCH  INT ","         _list1{LABEL,","}
-       | MATCHD INT "," INT "," _list1{LABEL,","}
+  match: /MATCH/  INT ","         _list1{LABEL,","}
+       | /MATCHD/ INT "," INT "," _list1{LABEL,","}
   
   NULLARY_BC: /NOP|HLT|NIL|I0|I1|BT|BF|LDE|POP|DUP|TUCK|TUCK2|SWAP|OVER|ADD|SUB|MUL|DIV|REM|NEG|SHL|SHR|ASR|INC|AND|OR|XOR|TAG|I2(B|C)|(B|C)2I|CLONE|UNPCK|LLCL[0-9]?|SLCL[0-9]?|LDCV[0-3]?|LLCV([1-2][0-3])?|EAP[0-5]|ETL[0-5]|CAP[1-6]|CTL[1-6]|UAP|UTL|RET/
   JUMP: /GOTO|FASTAP|FASTTL/
@@ -140,9 +140,6 @@ grammar = r"""
   LD_BC: /LD(H|W|D)?/
   LDG: /LDG(W|D)?/
   MKCLO: /MKCLO|MKLCLO/
-
-  MATCH:  /MATCHN?/
-  MATCHD: /MATCHN?D/
 
   %import common.INT    // this is actually a natural number
   %import common.SIGNED_INT // this is not
@@ -315,6 +312,8 @@ class RelaxFragment(Fragment):
     assert not self.initialized
     self.bc = bc
     self.length = bc.current_length
+  def relax_type(self):
+    return self.bc.relax_type()
 
 # A sequence of data objects. Data objects have fixed
 # lengths but might be rearranged. After rearrangement,
@@ -492,7 +491,9 @@ class BcAsm(Transformer):
     if len(targets) != n:
       print(f"Error: number of labels in {name} at {bc.line}:{bc.column} inconsistent")
       self.stop_after_transform = True
-    return RelaxBytecode(name, content[1:], size)
+    out_bc = RelaxBytecode(name, content[1:], size)
+    out_bc.padding = 0
+    return out_bc
     
 def parse(input: str):
   tree = parser.parse(input)
@@ -669,11 +670,103 @@ def print_fragments(frag: Fragment):
         length += bc.length
     frag = frag.next
 
+class BcRelax():
+  def __init__(self, head):
+    self.head = head
+    self.changed = False # tracks within a relax iteration
+    self.stop_after_relax = False
+
+  def lower_ld(self, prev: Fragment, frag: RelaxFragment):
+    assert frag.relax_type() == RelaxType.LD
+    value = frag.bc.args[0]
+    if -128 <= value <= 127:
+      bc = FixedBytecode('LDH', frag.bc.args, 2)
+      frag = FixedFragment(frag.offset, 2, frag.labels, frag.next, [bc])
+      prev.next = frag
+      return frag
+    if -32768 <= value <= 32767:
+      self.changed = True # fragment is growing
+      bc = FixedBytecode('LDW', frag.bc.args, 3)
+      frag = FixedFragment(frag.offset, 3, frag.labels, frag.next, [bc])
+      prev.next = frag
+      return frag
+    self.changed = True # fragment is growing
+    bc = FixedBytecode('LDD', frag.bc.args, 5)
+    frag = FixedFragment(frag.offset, 5, frag.labels, frag.next, [bc])
+    prev.next = frag
+    if not (-2147483648 <= value <= 2147483647):
+      print("Error: LD arg {value} exceeds the range of integers")
+      self.stop_after_relax = True
+
+  # Technically, something that works with LDGW now might not work later if
+  # it wasn't moved to the low address section but happens to fit in a low
+  # address anyway above something like a MATCH instruction. I think the way
+  # we move things to low addresses prevents this from occurring in practice,
+  # but to avoid relying on that property, we only fix LDG once it relaxes.
+  # When we assemble, remaining LDGs are treated as LDGW.
+  def relax_ldg(self, prev: Fragment, frag: RelaxFragment):
+    assert frag.relax_type() == RelaxType.ABS_2_TO_3
+    label: Label = frag.bc.arg[0]
+    label_frag = label.containing_fragment
+    label_offset = label_frag.offset + label_frag.labels[label.name]
+    if label_offset > 65535:
+      self.changed = True
+      bc = FixedBytecode('LDGD', frag.bc.args, 4)
+      frag = FixedFragment(frag.offset, 4, frag.labels, frag.next, [bc])
+      prev.next = frag
+      return frag
+    # otherwise do nothing
+
+  # Like LD, LFLD and SFLD are fixed immediately.
+  def relax_fld(self, prev: Fragment, frag: RelaxFragment):
+    pass
+
+  _match_align_to = {
+    'MATCH': 2,  # 2 mod 4
+    'MATCHD': 0, # 0 mod 4
+  }
+
+  def fix_match_padding(self, frag: RelaxFragment):
+    assert frag.relax_type() == RelaxType.MATCH_PAD
+    old_padding = frag.bc.padding
+    # padding starts at offset + 1 and needs to
+    # go up to _match_align_to[frag.bc.name]
+    pad_start = frag.offset + 1
+    pad_modulus = pad_start % 4
+    padding = BcRelax._match_align_to[frag.bc.name] + 4 - pad_modulus
+    if padding >= 4:
+      padding -= 4
+    frag.bc.padding = padding
+    frag.bc.current_length += padding - old_padding
+    frag.length = frag.bc.current_length
+
+  # Find all RelaxFragments whose RelaxType is MATCH_PAD and fix
+  # up the padding and offsets throughout the entire program.
+  # This is a useful first pass that prevents certain cases of immediate
+  # relaxation. Later passes will fix match padding as they work.
+  def fix_up_padding(self):
+    frag = self.head
+    frag_offset = frag.offset
+    while frag is not None:
+      frag.offset = frag_offset
+      if isinstance(frag, RelaxFragment) and frag.relax_type() == RelaxType.MATCH_PAD:
+        self.fix_match_padding(frag)
+      frag_offset += frag.length
+      frag = frag.next
+
+  def relax_pass(self):
+    frag = self.head
+    frag_offset = frag.offset
+
+
 def relax_fragments(frag: Fragment):
-  pass
+  relaxer = BcRelax(frag)
+  relaxer.fix_up_padding()
 
 def assemble_fragments(frag: Fragment):
   pass
 
 def drive(str):
-  print_fragments(fragmentize(parse(str)))
+  frag = fragmentize(parse(str))
+  relax_fragments(frag)
+  print_fragments(frag)

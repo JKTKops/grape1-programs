@@ -414,18 +414,14 @@ object on top of the stack for more fine-grained control if needed.
 | Byte | Name | Arguments ([byte count]:[name]) | Operation |
 | -----|------|---------------------------------|-----------|
 | `0x55` | `MATCH` | `0-3: padding, 2:N, [4:BO]*` | `<V:S> -> <V:S>`. See pattern matching below. |
-| `0x56` | `MATCHN` | `0-3: padding, 2:N, 4:NIL, [4:BO]*` | `<V:S> -> <V:S>`. See pattern matching below. |
-| `0x57` | `MATCHD` | `0-3: padding, 2:LO, 2:HI, 4:DEF, [4:BO]*` | `<V:S> -> <V:S>`. See pattern matching below. |
-| `0x58` | `MATCHND` | `0-3: padding, 2:LO, 2:HI, 4:NIL, 4:DEF, [4:BO]*` | `<V:S> -> <V:S>`. See pattern matching below. |
-| `0x59` | `CHKTAG` | `2:tag` | `<OBJ(tag,...):S> -> <OBJ:S>`, otherwise halt with an error. |
-| `0x5A` | `IFTEQ` | `1:tag, 2:RO` | `<OBJ(tag',...):S> -> no change`, Branch if `tag' == tag`. |
-| `0x5B` | `IFTLT` | `1:tag, 2:RO` | `<OBJ(tag',...):S> -> no change`, Branch if `tag' < tag`. |
+| `0x56` | `MATCHD` | `0-3: padding, 2:LO, 2:HI, 4:DEF, [4:BO]*` | `<V:S> -> <V:S>`. See pattern matching below. |
+| `0x57` | `CHKTAG` | `2:tag` | `<OBJ(tag,...):S> -> <OBJ:S>`, otherwise halt with an error. |
+| `0x58` | `IFTEQ` | `1:tag, 2:RO` | `<OBJ(tag',...):S> -> no change`, Branch if `tag' == tag`. |
+| `0x59` | `IFTLT` | `1:tag, 2:RO` | `<OBJ(tag',...):S> -> no change`, Branch if `tag' < tag`. |
 
-The `MATCH{N,D}` bytecodes implement jump tables.
+The `MATCH{D}` bytecodes implement jump tables.
 For `MATCH` and `MATCHD`, the top value cannot be nil.
-For `MATCHN` and `MATCHND`, the `NIL` target is taken iff the top value
-on the stack is nil.
-In all other cases, the value to switch on is the value on top of the stack. 
+In all cases, the value to switch on is the value on top of the stack. 
 If that object is an immediate object, its field is used for the switch.
 (This feature might be removed if it turns out to be expensive and useless.)
 Otherwise, the object's tag is used. Call the value to switch on `T`.
@@ -433,7 +429,7 @@ Otherwise, the object's tag is used. Call the value to switch on `T`.
 `MATCHD` can implement pattern matching in a dynamically typed language,
 or whenever else a default branch or generic range of tags is useful.
 Immediately following the bytecode are the necessary number of 0 bytes to align
-the remaining arguments to a 4-byte offset boundary. `DEF` is then a 4-byte
+the jump targets to a 4-byte offset boundary. `DEF` is then a 4-byte
 code pointer (so the most significant byte should be zero). The value
 `LO` is the tag (or immediate) value that should correspond to jump table
 index 0. In the immediate case, `LO` (and `HI`) are treated as signed.
@@ -446,8 +442,7 @@ at index `T-LO` of table.
 
 `MATCH` operates as `MATCHD`, except that `LO` is always `0` if `T` is a
 field of an immediate object, and `16` if `T` is an object's tag.
-The value `N` is the number of labels in the table, and does not count
-`MATCHN`'s label for nil.
+The value `N` is the number of labels in the table.
 No default label is given as the match must be statically proven to be
 complete. (For an ML-style language, the compiler can insert code to
 invoke an error routine for cases un-matched in the source program.)
