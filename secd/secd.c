@@ -3,8 +3,13 @@
 #include <stdint.h>
 #include <stdlib.h> // exit
 #include <string.h> // memcpy
-
 #include <sys/types.h>
+
+#ifdef NDEBUG
+#define dprintf(...)
+#else
+#define dprintf(...) fprintf(stderr, __VA_ARGS__)
+#endif
 
 // runtime configuration
 #define STACK_SZ 102400
@@ -66,6 +71,7 @@ typedef struct STRING {
 /* Format of a closure. */
 typedef struct FUN {
   OBJ_HDR hdr;
+  word padding[0]; // otherwise gcc tries to pack bitfield into header
   word arity:8;
   word code:24;
   word captures[0];
@@ -111,6 +117,11 @@ typedef struct DUMP_FRAME {
 
 // let's say fixed space for the bytecode program, because why not
 byte code[CODE_SZ] = { 0 }; // 2MB
+// These are needed to handle the issue of 8-byte x86 pointers
+// but 4-byte bytecode offsets when relocating static data.
+// See the comment at the Relocatable Data section header.
+word *static_data = NULL;
+uint32_t static_data_len;
 
 // Global heap (nongenerational) and stack.
 HEAP heap = { 0 };
@@ -299,7 +310,7 @@ void print_obj(OBJ obj) {
       printf("STRING(%s)", (char*)obj->fields); return;
     case TAG_FUN:
       fun = (FUN*)obj;
-      printf("FUN(%x,%d", fun->code, fun->arity);
+      printf("FUN(0x%x,%d", fun->code, fun->arity);
       field = 1;
       break;
     case TAG_PAP:
@@ -326,6 +337,17 @@ void print_internal_objs() {
   printf("\nCommon BOOLs:\n");
   print_obj((OBJ)&common_BOOLs[0]); printf("\n");
   print_obj((OBJ)&common_BOOLs[1]); printf("\n\n");
+
+  printf("Static data array (@%p):\n", static_data);
+  {
+    word *W = static_data;
+    while (W < static_data + static_data_len) {
+      OBJ obj = (OBJ)W;
+      W += obj->hd.r.size;
+      printf("  "); print_obj(obj); printf("\n");
+    }
+  }
+  printf("\n");
 }
 
 void print_heap() {
@@ -378,17 +400,18 @@ enum BYTECODE {
   BC_LDH = 0x06,
   BC_LDW = 0x07,
   BC_LDD = 0x08,
-  BC_LDGW = 0x09,
-  BC_LDGD = 0x0A,
-  BC_LLCL = 0x0B,
-  BC_SLCL = 0x0C,
-  BC_LDE = 0x0D,
-  BC_POP = 0x0E,
-  BC_DUP = 0x0F,
-  BC_TUCK = 0x10,
-  BC_TUCK2 = 0x11,
-  BC_SWAP = 0x12,
-  BC_OVER = 0x13,
+  BC_CHR = 0x09,
+  BC_LDGW = 0x0A,
+  BC_LDGD = 0x0B,
+  BC_LLCL = 0x0C,
+  BC_SLCL = 0x0D,
+  BC_LDE = 0x0E,
+  BC_POP = 0x0F,
+  BC_DUP = 0x10,
+  BC_TUCK = 0x11,
+  BC_TUCK2 = 0x12,
+  BC_SWAP = 0x13,
+  BC_OVER = 0x14,
   /* Arithmetic */
   BC_ADD = 0x18,
   BC_SUB = 0x19,
@@ -429,8 +452,8 @@ enum BYTECODE {
   BC_IFGT = 0x43,
   BC_IFLE = 0x44,
   BC_IFGE = 0x45,
-  BC_IF_F = 0x46,
-  BC_IF_NF = 0x47,
+  BC_IFF  = 0x46,
+  BC_IFNF = 0x47,
   BC_IFCEQ = 0x48,
   BC_IFCNE = 0x49,
   BC_IFCLT = 0x4A,
@@ -439,10 +462,10 @@ enum BYTECODE {
   BC_IFCGE = 0x4D,
   BC_IFSAME = 0x4E,
   BC_IFDIFF = 0x4F,
-  BC_IF_NIL  = 0x50,
-  BC_IF_NNIL = 0x51,
-  BC_IF_FALSY  = 0x52,
-  BC_IF_TRUTHY = 0x53,
+  BC_IFNIL  = 0x50,
+  BC_IFNNIL = 0x51,
+  BC_IFFALSY  = 0x52,
+  BC_IFTRUTHY = 0x53,
   BC_GOTO   = 0x54,
   BC_MATCH  = 0x55,
   BC_MATCHD = 0x56,
@@ -534,69 +557,141 @@ void load_bytecode(char *path) {
   fread(code, sizeof(bc_header_t), 1, bcf);
   C = code + hdr->entry_off;
 
-  word *p = (word*)(code + 12);
-  word *reloc_end = p + hdr->reloc_seg_len;
-  word *prog_end  = (word*)(code + hdr->byte_len);
+  uint32_t *p = (uint32_t*)(code + 12);
+  uint32_t *reloc_end = p + hdr->reloc_seg_len;
+  uint32_t *prog_end  = (uint32_t*)(code + hdr->byte_len);
 
   /* relocatable data */
+  // now we have to deal with a difference between compiling for my x86
+  // computer and for ETCa. The 4-byte fields in the bytecode program
+  // are perfect for ETCa, but pose a huge problem here: we want to overwrite
+  // them with pointers, but we cannot overwrite a 4-byte field with an
+  // 8-byte pointer.
+  // The solution is, as always, another layer of indirection.
+  // We allocate (dynamically) a second array with space for as many (x86)
+  // words as the bytecode declares for the relocation segment. This means
+  // we allocate twice as many bytes as the segment takes in the bytecode
+  // file. Then we copy the objects into the array in the correct format for
+  // 8-byte pointers, and overwrite the static header with the offset of the
+  // object in this array. Whenever the program uses the LDGW or LDGD bytecodes,
+  // we find the static object, read the offset in the array, and push that
+  // pointer instead. What a mess, but what can you do?
+
+  // The relocations themselves follow the same logic for both portable C
+  // and ETCa.
+
+  static_data = calloc(hdr->reloc_seg_len, sizeof(word));
+  uint32_t static_index = 0;
+
   while (p < reloc_end) {
     // read objhdr of next object
     fread(p, sizeof(OBJ_HDR), 1, bcf);
-    OBJ obj = (OBJ)p;
-    uint16_t size = obj->hd.r.size;
-    // handle static strings specially
+    OBJ_HDR *hdr = (OBJ_HDR*)p;
+    uint16_t size = hdr->size;
+    OBJ obj = (OBJ)(static_data + static_index);
+    static_data[static_index] = *p; // copy header to static arr
+    *p = static_index++; // overwrite bytecode object header with location,
+      // the "static index" of the object.
+    dprintf("Overwriting static header at 0x%lx with %d\n", (byte*)p-code, static_index-1);
+
+    // handle static strings specially (getting this out of the way here
+    // is also important for ETCa as strings aren't reloc'd).
     if (obj->hd.r.tag == TAG_STRING) {
+      // read the string directly into static data array
       fread(&obj->fields[0], sizeof(uint32_t), size, bcf);
       p += size;
+      // sizeof(uint32_t)/sizeof(word) is not an integer on x86 and probably
+      // also isn't on other platforms, unfortunately,
+      // so we can't just add size*4/sizeof(word) to static_index as we would
+      // lose half-words. For portability, we add (sizeof(word)-1) to the
+      // numerator, which ensures that the result of the division doesn't lose
+      // fractional words needed for the end of the string.
+      int bytesize = size * 4;
+      static_index += (bytesize + sizeof(word) - 1) / sizeof(word);
       continue;
     }
-    // now we have to deal with a difference between compiling for my x86
-    // computer and for ETCa. The 4-byte fields in the bytecode program
-    // are perfect for ETCa, but do not match the sizeof(word) on my x86
-    // computer. So we have to read them one at a time and handle them.
-    // In ETCa we can do the same thing but without the shuffling.
+    p++; // advance p past the bytecode object's header.
     for (int i = 0; i < obj->hd.r.size-1; ++i) {
       // read 4 bytes from the bytecode file 
-      fread(&obj->fields[i], sizeof(uint32_t), 1, bcf);
+      fread(p, sizeof(uint32_t), 1, bcf);
       // If this is the first iteration and the object is
       // immediate or FUN, its first field is not an object and must not
       // be relocated.
-      printf("Read %lx\n", obj->fields[i]);
+      dprintf("Read 0x%x\n", *p);
       if (i == 0 && obj->hd.r.tag <= TAG_FUN) continue;
-      // extract that 4 byte value so we can determine how to reloc.
-      uint32_t relocation = (uint32_t)obj->fields[i];
-      printf("Relocating %x ... ", relocation);
+      // extract that 4 byte value so we can determine how to reloc,
+      // and increment p to prepare for the next field.
+      uint32_t relocation = *p++;
+      dprintf("Relocating 0x%x ... ", relocation);
       if (relocation == 0) {
-        printf("nil\n");
+        dprintf("nil\n");
+        static_data[static_index++] = 0;
         continue; // don't relocate nil
       }
       if (relocation - 0xFF000000 <= 1) {
         // relocate offset to common boolean
-        obj->fields[i] = (word)&common_BOOLs[relocation-0xFF000000];
-        printf("%p\n", &common_BOOLs[relocation-0xFF000000]);
+        static_data[static_index++] =
+          (word)&common_BOOLs[relocation-0xFF000000];
+        dprintf("%p\n", &common_BOOLs[relocation-0xFF000000]);
       } else if (relocation - 0xFF000002 <= 10) {
         // relocate offset to common int
-        obj->fields[i] = (word)&common_INTs[relocation-0xFF000002];
-        printf("%p\n", &common_INTs[relocation-0xFF000002]);
+        static_data[static_index++] =
+          (word)&common_INTs[relocation-0xFF000002];
+        dprintf("%p\n", &common_INTs[relocation-0xFF000002]);
       } else if (relocation >= 0x20000000) {
         die("malformed relocation");
       } else {
-        // relocate to bytecode offset
-        obj->fields[i] = (word)(code + relocation);
-        printf("%p\n", code + relocation);
+        // relocate to bytecode offset. Unfortunately, that offset might
+        // be further in the file than we are currently. Fortunately,
+        // that's OK, because that object will have its "static index"
+        // set later. We just have to set the static object's field here
+        // to have the bytecode offset and a bottom-bit tag so that we
+        // know to chase the pointer when we go back over it shortly.
+        // In ETCa, just write `code+relocation` into the bytecode obj's
+        // field directly, that is the correct offset.
+        static_data[static_index++] = (relocation << 1) | 1;
+        dprintf("delaying (to offset 0x%x)\n", relocation);
       }
     }
-    p += size;
   }
+
+  // x86 only: go over all the objects in the static data array and update
+  // delayed relocations. Also, sanity check the array size.
+  // (equal is OK because we keep it pointing past last used index.)
+  assert(static_index <= hdr->reloc_seg_len);
+  static_data_len = static_index;
+  {
+    word *W = static_data;
+    while (W < static_data + static_data_len) {
+      OBJ obj = (OBJ)W;
+      W += obj->hd.r.size;
+      if (obj->hd.r.tag <= TAG_FUN) continue;
+      for (int i = 0; i < obj->hd.r.size-1; ++i) {
+        // if bottom bit of field is 1, it's delayed
+        if (obj->fields[i] & 1) {
+          uint32_t offset = obj->fields[i] >> 1;
+          uint32_t index = *(uint32_t*)(code + offset);
+          obj->fields[i] = (word)(static_data + index);
+          dprintf("Delayed reloc: offset 0x%x -> index %d -> %p\n",
+             offset, index, static_data+index);
+        }
+      }
+    }
+  }
+
+  //dprintf("After reloc seg: end:%p p:%p\n", reloc_end, p);
 
   /* text */
   while (p < prog_end) {
-    fread(p, sizeof(word), 1, bcf);
+    fread(p, sizeof(uint32_t), 1, bcf);
     p++;
   }
 
+  //dprintf("After text seg: end:%p p:%p\n", prog_end, p);
+
   // targetting my machine stuff: check that bytecode was honest
   ungetc(fgetc(bcf), bcf);
+  //dprintf("{ %d %d %d } %ld\n", hdr->byte_len, hdr->reloc_seg_len, hdr->entry_off, ftell(bcf));
   assert(feof(bcf));
   fclose(bcf);
 }
@@ -678,8 +773,8 @@ int main(int argc, char *argv[]) {
     die("no bytecode file provided");
   }
 
-  print_internal_objs();
   load_bytecode(argv[1]);
+  print_internal_objs();
 
   enum BYTECODE bc;
   word arg1, arg2;
@@ -720,13 +815,26 @@ LDINT:
   PUSH((OBJ)(Hp-2));
   break;
 
+case BC_CHR:
+  arg1 = *C++;
+  HPALLOC(2);
+  Hp[-2] = (OBJ)HDR(TAG_CHAR, 2);
+  Hp[-1] = (OBJ)arg1;
+  PUSH((OBJ)(Hp-2));
+  break;
+
 case BC_LDGD:
   arg1 = read24();
   goto LDG;
 case BC_LDGW:
   arg1 = read16();
 LDG:
-  PUSH((OBJ)(code + arg1));
+  // In ETCa:
+  // PUSH((OBJ)(code + arg1));
+  // In x86:
+  // We have to handle static_data indexing.
+  //dprintf("LDG index: %d\n", *(uint32_t*)(code + arg1));
+  PUSH((OBJ)(static_data + *(uint32_t*)(code + arg1)));
   break;
 
 case BC_LLCL:
@@ -816,8 +924,157 @@ case BC_OVER:
   PUSH(operand1);
   break;
 
+// in assembly we can probably also use a macro for this but it might be a good
+// idea to at least share the allocation code?
+#define BINOP_TYPED(typ, op) \
+  do { \
+    POP(operand2); \
+    POP(operand1); \
+    typ r = (typ)(operand1->fields[0]) op ((typ)operand2->fields[1]); \
+    HPALLOC(2); \
+    Hp[-2] = (OBJ)HDR(TAG_INT,2); \
+    Hp[-1] = (OBJ)r; \
+    PUSH((OBJ)(Hp-2)); \
+  } while (0)
+#define BINOP(op) BINOP_TYPED(intptr_t, op)
+
+case BC_ADD:
+  BINOP( + ); break;
+case BC_SUB:
+  BINOP( - ); break;
+case BC_MUL:
+  BINOP( * ); break;
+case BC_DIV:
+  BINOP( / ); break;
+case BC_REM:
+  BINOP( % ); break;
+case BC_NEG:
+  POP(operand1);
+  HPALLOC(2);
+  Hp[-2] = (OBJ)HDR(TAG_INT,2);
+  Hp[-1] = (OBJ)(-operand1->fields[0]);
+  PUSH((OBJ)(Hp-2));
+  break;
+case BC_SHL:
+  BINOP( << ); break;
+case BC_SHR:
+  BINOP_TYPED(uintptr_t, >> ); break;
+case BC_ASR:
+  BINOP( >> ); break;
+case BC_AND:
+  BINOP( & ); break;
+case BC_OR:
+  BINOP( | ); break;
+case BC_XOR:
+  BINOP( ^ ); break;
+case BC_INC:
+  arg1 = (*C++);
+  arg2 = (*C++);
+  arg2 = Lcl(arg1)->fields[0] + arg2;
+  HPALLOC(2);
+  Hp[-2] = (OBJ)HDR(TAG_INT,2);
+  Hp[-1] = (OBJ)arg2;
+  Lcl(arg1) = (OBJ)(Hp-2);
+  break;
+
+case BC_TAG:
+  arg1 = (*Sp)->hd.r.tag;
+  HPALLOC(2);
+  Hp[-2] = (OBJ)HDR(TAG_INT,2);
+  Hp[-1] = (OBJ)arg1;
+  PUSH((OBJ)(Hp-2));
+  break;
+
+case BC_I2B:
+  arg1 = TAG_BOOL; goto STAG;
+case BC_I2C:
+  arg1 = TAG_CHAR; goto STAG;
+case BC_B2I:
+case BC_C2I:
+  arg1 = TAG_INT; goto STAG;
+case BC_STAG:
+  arg1 = read16();
+STAG:
+  (*Sp)->hd.r.tag = arg1;
+  break;
+
+case BC_ALLOC:
+  arg1 = read16();
+  HPALLOC(arg1);
+  Hp[-arg1] = (OBJ)HDR(0, arg1);
+  PUSH((OBJ)(Hp-arg1));
+  break;
+
+case BC_MKCLO:
+  arg1 = *C++ + 2; // size = n + 2
+  HPALLOC(arg1);
+  Hp[-arg1] = (OBJ)HDR(TAG_FUN, arg1);
+  arg2  = read24() << 8;
+  arg2 |= *C++;
+  Hp[-arg1+1] = (OBJ)arg2;
+  arg2 = arg1;
+  arg1 -= 2;
+  goto FINISHOBJ;
+case BC_MKLCLO:
+  arg1 = *C++ + 3; // size = n + 3
+  HPALLOC(arg1);
+  Hp[-arg1]   = (OBJ)HDR(TAG_FUN, arg1);
+  Hp[-arg1+2] = (OBJ)E;
+  arg2  = read24() << 8;
+  arg2 |= *C++;
+  Hp[arg1+1] = (OBJ)arg2;
+  arg2 = arg1;
+  arg1 -= 3;
+  goto FINISHOBJ;
+case BC_MKOBJ:
+  arg1 = *C++ + 1; // size = n + 1;
+  arg2 = read16(); // tag
+  HPALLOC(arg1);
+  Hp[-arg1] = (OBJ)HDR(arg2, arg1);
+  arg2 = arg1;
+  arg1 -= 1;
+FINISHOBJ:
+  memcpy(Hp - arg1, Sp, sizeof(word)*arg1);
+  Sp += arg1;
+  PUSH((OBJ)(Hp-arg2));
+  break;
+
+case BC_CLONE:
+  POP(operand1);
+  arg1 = operand1->hd.r.size;
+  HPALLOC(arg1);
+  memcpy(Hp - arg1, operand1, arg1*sizeof(word));
+  PUSH((OBJ)(Hp-arg1));
+  break;
+
+case BC_UNPCK:
+  POP(operand1);
+  arg1 = operand1->hd.r.size - 1;
+  Sp -= arg1;
+  memcpy(Sp, operand1->fields, arg1*sizeof(word));
+  break;
+
+
+
     }
   }
 
   print_machine_state();
 }
+
+/*
+Next test program:
+
+type 'a option = None | Some of 'a;;
+Some (fun () -> Some ());; (* nil in closure and code builds from LDCV *)
+
+header: 30 0 12
+12: NIL
+13: MKCLO 1 3'24 1
+19: MKOBJ 1 2'16
+23: HLT
+24: LDCV0
+25: MKOBJ 1 2'16
+29: RET
+
+*/
