@@ -706,13 +706,13 @@ case BC_BF:
   PUSH((OBJ)&common_BOOLs[0]); break;
 
 case BC_LDW:
-  arg1 = read16();
+  arg1 = (int)(int16_t)read16(); // sign extension
   goto LDINT;
 case BC_LDD:
   arg1 = read32();
   goto LDINT;
 case BC_LDH:
-  arg1 = *C++;
+  arg1 = (int)(signed char)*C++; // sign extension
 LDINT:
   HPALLOC(2);
   Hp[-2] = (OBJ)HDR(TAG_INT, 2);
