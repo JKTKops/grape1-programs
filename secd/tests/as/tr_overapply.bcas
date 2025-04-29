@@ -1,0 +1,64 @@
+; The point of this test is to test a use of CTL to handle recursive
+; calls to a function that are achieved via overapplication.
+; This means, specifically, a function tail-calls with 2 arguments
+; a function of 1 argument, that returns another function of 1 argument,
+; which tail-calls the first function again. This should be a tail-
+; recursive loop in which the stack does not grow.
+
+; let rec tr_sum acc = function
+;   | []    -> acc
+;   | x::xs -> go (acc+x) xs
+; and go x = fun y -> tr_sum x y
+
+; and a list to test it with
+list4:
+  .object 16, static_4, list3
+list3:
+  .object 16, static_3, list2
+list2:
+  .object 16, static_2, list1
+list1:
+  .object 16, static_1, nil
+
+go_closure:
+  .closure go 1
+go: ; ( x -- (fun y -> tr_sum x y) )
+  MKCLO 1 go_anon1 1
+  SYS 0
+  RET
+
+go_anon1:
+  LDCV0
+  ; equivalently, FASTTL trzusum_closure, but we want to test
+  ; the tail-recursiveness of CTL2 specifically and this sort
+  ; of code could definitely arise from a fixpoint combinator.
+  LDG trzusum_closure
+  CTL2
+
+trzusum_closure:
+  .closure trzusum 2
+trzusum: ; LCL[0]: list, LCL[1] acc
+  ;SYS 0 ; print system state for testing
+  OVER IFNIL trzusum_stop
+  LLCL0 UNPCK
+  LLCL1 ADD
+  ; Since this is a call to a known function, a real compiler would
+  ; generate FASTAP go_closure; CTL1. But actually this sequence is
+  ; one byte shorter (due to LDGW instead of LDGD) and maybe would be
+  ; used if optimizing for space.
+  ; Anyway, this is where the magic happens. CTL2 of go_closure will
+  ; indirectly tail-recursively call trzusum.
+  LDG go_closure
+  SYS 0
+  CTL2
+trzusum_stop:
+  RET
+sum_closure:
+  .closure sum 1
+sum:
+  I0 FASTTL trzusum_closure
+_start:
+  LDG list4
+  FASTAP sum_closure
+  HLT
+

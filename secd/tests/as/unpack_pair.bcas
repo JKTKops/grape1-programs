@@ -1,0 +1,8 @@
+_start:
+  I0
+  I1
+  MKOBJ 2 16
+  DUP
+  CLONE
+  UNPCK
+  HLT

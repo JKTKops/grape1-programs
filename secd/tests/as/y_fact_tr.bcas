@@ -1,0 +1,45 @@
+; complex test:
+; factorial via fix combinator.
+
+; let fix f =
+;   let rec g x = f g x in
+;   g ;;
+; let factorial =
+;   fix (fun r acc n ->
+;     if n = 0
+;       then acc
+;       else r (acc*n) (n - 1)) 1;;
+; factorial 5
+; ==> 120
+
+fix_closure:
+  .closure fix 1
+fix:
+  MKCLO 1 fix.g 1
+  RET
+
+fix.g:
+  LDE
+  LDCV0
+  SYS 0
+  CTL2
+
+factorial.anon1_closure:
+  .closure factorial.anon1 3
+factorial.anon1: ; lcl[0] = n, lcl[1] = acc, lcl[2] = r
+  LLCL0 IFEQ factorial.anon1$L1
+  LLCL0 I1 SUB
+    LLCL1 LLCL0 MUL
+    LLCL2 CTL2
+factorial.anon1$L1:
+  POP RET
+
+_start:
+  I1
+  LDG factorial.anon1_closure
+  FASTAP fix_closure  ; stack: 0, fix(fun...)
+  CAP1                ; lcl[0] = factorial
+  LD 5
+  SWAP
+  CAP1
+  HLT

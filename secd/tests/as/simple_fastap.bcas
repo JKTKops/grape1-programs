@@ -1,0 +1,13 @@
+_start:
+  LD 2
+  LD 3
+  FASTAP addzh_closure
+  HLT
+addzh_closure:
+  .closure addzh 2
+addzh:
+  LLCL0
+  LLCL1
+  ADD
+  RET
+

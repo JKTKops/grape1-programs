@@ -1,0 +1,32 @@
+;; For purposes of testing match, we use a different list repr here
+;; where tag 16 is is binary cons and tag 17 is nullary nil.
+sum_closure:
+  .closure sum 2
+sum: ; lcl[1] = acc, lcl[0] = xs
+  LLCL0          ; xs
+  MATCH 2, sum_cons, sum_nil
+sum_nil:
+  LLCL1          ; xs acc
+  RET            ; return acc
+sum_cons:
+  UNPCK          ; lcl[3] = x, lcl[2] = xs'
+  LLCL1          ; acc x xs'
+  ADD            ; (x+acc) xs'
+  FASTTL sum_closure
+
+_start:
+  LDG list4
+  I0
+  FASTAP sum_closure
+  HLT
+
+list4:
+  .object 16, static_4, list3
+list3:
+  .object 16, static_3, list2
+list2:
+  .object 16, static_2, list1
+list1:
+  .object 16, static_1, list_nil
+list_nil:
+  .object 17

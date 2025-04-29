@@ -31,8 +31,8 @@ When a function is entered, the current stack pointer is saved on the `D` stack,
 adjusted to point below the function's arguments (see `FASTAP` for example).
 Offsets from this saved stack pointer therefore access the function's arguments
 and the things pushed over them.
-The value `locals[0]` refers to the rightmost argument (which is the lowest
-stack object above the saved pointer). `locals[1]` refers to the next
+The value `locals[0]` refers to the rightmost argument (which is the highest
+stack object below the saved pointer). `locals[1]` refers to the next
 argument from the right, etc. If the function has arity `A`,
 then `locals[A]` is the first value pushed after the function began executing.
 The behavior of saving stack pointers and the use of `locals` may change in
@@ -259,8 +259,8 @@ scratch).
 | `0x33` | `UNPCK` | none | `<OBJ(tag,F1,...,Fn):S> -> <F1:...:Fn:S>` |
 | `0x34` | `LFLD` | `1:n` | `<OBJ(_,...,Fn,...):S> -> <Fn:S>` "Load Field" |
 | `0x35` | `LFLDW` | `2:n` | `<OBJ(_,...,Fn,...):S> -> <Fn:S>` |
-| `0x36` | `SFLD` | `1:n` | `<V:OBJ(_,...,Fn,...):S> -> <OBJ(_,...,V,...):S>` |
-| `0x37` | `SFLDW` | `2:n` | `<V:OBJ(_,...,Fn,...):S> -> <OBJ(_,...,V,...):S>` |
+| `0x36` | `SFLD` | `1:n` | `<V:OBJ(_,...,Fn,...):S> -> <S>`, field `n` of `OBJ` (marked `Fn`) is overwritten by `V` |
+| `0x37` | `SFLDW` | `2:n` | As `SFLD` with larger range for `n`. |
 | `0x38` | `LDCV` | `1:n` | `<S, E=FUN(_,_,...,Vn,...)> -> <Vn:S, E>` "Load Direct Captured Value" |
 | `0x39` | `LLCV` | `1:L, 1:n` | `<S, E> -> <LL(E,L,n):S, E>` "Load Linked Captured Value", see comments below. |
 
@@ -413,7 +413,7 @@ object on top of the stack for more fine-grained control if needed.
 
 | Byte | Name | Arguments ([byte count]:[name]) | Operation |
 | -----|------|---------------------------------|-----------|
-| `0x55` | `MATCH` | `0-3: padding, 2:N, [4:BO]*` | `<V:S> -> <V:S>`. See pattern matching below. |
+| `0x55` | `MATCH` | `2:N, 0-3: padding, [4:BO]*` | `<V:S> -> <V:S>`. See pattern matching below. |
 | `0x56` | `MATCHD` | `0-3: padding, 2:LO, 2:HI, 4:DEF, [4:BO]*` | `<V:S> -> <V:S>`. See pattern matching below. |
 | `0x57` | `CHKTAG` | `2:tag` | `<OBJ(tag,...):S> -> <OBJ:S>`, otherwise halt with an error. |
 | `0x58` | `IFTEQ` | `1:tag, 2:RO` | `<OBJ(tag',...):S> -> no change`, Branch if `tag' == tag`. |
@@ -432,7 +432,7 @@ Immediately following the bytecode are the necessary number of 0 bytes to align
 the jump targets to a 4-byte offset boundary. `DEF` is then a 4-byte
 code pointer (so the most significant byte should be zero). The value
 `LO` is the tag (or immediate) value that should correspond to jump table
-index 0. In the immediate case, `LO` (and `HI`) are treated as signed.
+index 0. `LO` (and `HI`) are treated as signed.
 `HI-LO+1` is the number of addresses in the jump table. Finally, each address
 `BO` is a 4-byte code pointer like `DEF`.
 
@@ -442,12 +442,15 @@ at index `T-LO` of table.
 
 `MATCH` operates as `MATCHD`, except that `LO` is always `0` if `T` is a
 field of an immediate object, and `16` if `T` is an object's tag.
-The value `N` is the number of labels in the table.
+The value `N` is the number of labels in the table. The value of `N`
+is not used for any checks -- it is provided for the sake of disassemblers,
+program verifiers, or other kinds of program analyzers.
 No default label is given as the match must be statically proven to be
 complete. (For an ML-style language, the compiler can insert code to
 invoke an error routine for cases un-matched in the source program.)
-The padding aligns to a 2-mod-4 byte offset rather than 0-mod-4,
-so that the addresses in the table will be 4-byte aligned.
+Since `N` may be ignored by interpreters, it is not subject to alignment
+restrictions; `N` occurs before the padding, then the padding aligns
+to a 0-mod-4 byte offset as for `MATCHD`.
 
 Consider the ML function
 ```ml
@@ -536,7 +539,7 @@ semantics are clarified below where necessary.
 
 | Byte | Name | Arguments ([byte count]:[name]) | Operation |
 | -----|------|---------------------------------|-----------|
-| `0x60` | `FASTAP` | `3:BO` | `<S,E,C,D> -> <S, *BO=FUN(CP,A,...), CP, (drop A S,E,C+3):D>` |
+| `0x60` | `FASTAP` | `3:BO` | `<S,E,C,D> -> <S, *BO=FUN(CP,A,...), CP, (drop A S,E,C+4):D>` |
 | `0x61` | `FASTTL` | `3:BO` | `<S,_,_,(S',E',C'):D> -> <take A S ++ S', *BO=FUN(CP,A,...), CP, (S',E',C'):D>` |
 
 These two bytecodes provide fast calls to known functions. Provided is the
@@ -618,10 +621,11 @@ closure and the supplied arguments; this PAP is the result of the
 application. (The exact format of PAPs is not currently specified.
 You should not assume that there is a connection between PAP A, constructed
 from partially applying PAP B, and PAP B. Neither should you assume that
-there is _not_ such a connection.)
+there is _not_ such a connection.) Since a PAP is the result of the
+application, in the `CTL` case, the PAP is returned as if by `RET`.
 
 If the arity is exactly `P`, then the function-like object is entered.
-A closure is entered as if by `UAP` or `UTL` as appropriate
+A closure is entered as if by `UAP` or `UTL` as appropriate.
 To enter a PAP, the fixed arguments in the PAP are pushed onto the stack
 in reverse order, and we proceed by dealing with the fixed closure instead
 of the PAP. This process is known as "zonking" a PAP.^1
@@ -646,8 +650,8 @@ regain control after the first application is complete.
 It is easier to understand if these cases are considered separately.
 
 In the `CAP` case, a dump frame is created for the current context, except
-the saved stack pointer is adjusted (by `P`) to be below the arguments that
-will be consumed by the operation. Then
+the saved stack pointer is adjusted by `P`, rather than by `A`,
+to be below the arguments that will be consumed by the operation. Then
 and control is transferred to an internal bytecode sequence. The stack and
 current environment pointer are unchanged. The internal bytecode sequence
 is `UAP; CTL<P-A>`. If we tried to apply a closure of arity 1 to 2 parameters,
@@ -670,8 +674,10 @@ In the `CTL` case, however, we don't want that last `CTL1` to return to
 the context of the original `CTL` bytecode, because that bytecode is a
 tail calling bytecode. We want it to return to the context on the stack
 before we began. Well, that's easy! We simply don't create a new dump
-frame before transferring control to the internal bytecode sequence.
-Everything else is identical.
+frame before transferring control to the internal bytecode sequence,
+and we perform a stack slide to clean up the context of the original
+`CTL` bytecode before abandoning that context. (This is the equivalent
+of TCO.) Everything else is identical.
 
 The requirement of having a static internal bytecode sequence to invoke
 is precisely why we do not provide generic `CAP` or `CTL` bytecodes.

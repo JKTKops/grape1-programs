@@ -1,0 +1,24 @@
+; let add x y = x + y
+; let add2 = add 2
+; add2 3 + add2 4
+; ==> 11
+
+add_closure:
+  .closure add 2
+add:
+  LLCL1 LLCL0 ADD
+  RET
+
+_start:
+  LD 2
+  LDG add_closure
+  CAP1            ; lcl[0] = add2 = add 2
+  LD 4
+  OVER            ; stack now: add2, 4, add2
+  CAP1            ; add2 4 -> 6, stack: 6, add2
+  LD 3
+  LLCL0           ; stack: add2, 3, 6, add2
+  CAP1            ; stack: 5, 6, add2
+  ADD             ; 5 + 6 -> 11
+  HLT
+  

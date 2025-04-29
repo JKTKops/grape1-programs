@@ -1,0 +1,27 @@
+list4:
+  .object 16, static_4, list3
+list3:
+  .object 16, static_3, list2
+list2:
+  .object 16, static_2, list1
+list1:
+  .object 16, static_1, nil
+trzusum_closure:
+  .closure trzusum 2
+trzusum: ; LCL[0]: list, LCL[1] acc
+  SYS 0
+  OVER IFNIL trzusum_stop
+  LLCL0 UNPCK
+  LLCL1 ADD
+  FASTTL trzusum_closure
+trzusum_stop:
+  RET
+sum_closure:
+  .closure sum 1
+sum:
+  I0 FASTTL trzusum_closure
+_start:
+  LDG list4
+  FASTAP sum_closure
+  HLT
+

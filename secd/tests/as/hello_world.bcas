@@ -1,0 +1,6 @@
+_start:
+  LDG msg
+  SYS 0
+  HLT
+msg:
+  .string "Hello, world!"

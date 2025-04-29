@@ -1,0 +1,18 @@
+add6_closure: ; silly arity-6 closure
+  .closure add6 6
+add6:
+  ADD ADD ADD ADD ADD RET
+_start:
+  I0
+  I1
+  LD 2
+  LD 3
+  LD 4
+  LD 5
+  LDG add6_closure
+  CAP1
+  CAP1
+  CAP1
+  CAP1
+  CAP1 SYS 0
+  CAP1

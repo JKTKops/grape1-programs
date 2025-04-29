@@ -1,0 +1,39 @@
+; let rec map f = function
+;   | [] -> []
+;   | x::xs -> f x :: map f xs;;
+; map (+1) [0;1;2;3];;
+
+map_closure:
+  .closure map 2
+map: ; lcl[0] is list, lcl[1] is f
+  LLCL0 IFNIL map_base
+  LLCL0 UNPCK ; lcl[2] = xs, lcl[3] = x
+  ; make right argument of cons
+  LLCL2 LLCL1 FASTAP map_closure
+  ; make left argument of cons
+  LLCL3 LLCL1 CAP1
+  ; make object
+  MKOBJ 2 16
+  RET
+map_base:
+  POP RET
+
+_start_anon1_closure:
+  .closure _start_anon1 1
+_start_anon1:
+  I1 ADD RET
+
+_start:
+  LDG list0
+  LDG _start_anon1_closure
+  FASTAP map_closure
+  HLT
+
+list0:
+  .object 16, static_0, list1
+list1:
+  .object 16, static_1, list2
+list2:
+  .object 16, static_2, list3
+list3:
+  .object 16, static_3, nil
