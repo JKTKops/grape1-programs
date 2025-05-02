@@ -1,0 +1,86 @@
+cabal-version: 2.2
+
+-- This file has been generated from package.yaml by hpack version 0.37.0.
+--
+-- see: https://github.com/sol/hpack
+
+name:           hmlc
+version:        0.1.0.0
+description:    Please see the README on GitHub at <https://github.com/githubuser/hmlc#readme>
+homepage:       https://github.com/JKTKops/grape1-programs#readme
+bug-reports:    https://github.com/JKTKops/grape1-programs/issues
+author:         Max Kopinsky
+maintainer:     zerglingk9012@gmail.com
+copyright:      2025 Max Kopinsky
+license:        BSD-3-Clause
+license-file:   LICENSE
+build-type:     Simple
+extra-source-files:
+    README.md
+    CHANGELOG.md
+
+source-repository head
+  type: git
+  location: https://github.com/JKTKops/grape1-programs
+
+library
+  exposed-modules:
+      Builtin.Keys
+      Builtin.Prim
+      Core
+      Core.Types
+      Outputable
+      Panic
+      Types.Builtin
+      Types.Unique
+  other-modules:
+      Paths_hmlc
+  autogen-modules:
+      Paths_hmlc
+  hs-source-dirs:
+      src
+  default-extensions:
+      OverloadedStrings
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wredundant-constraints
+  build-depends:
+      base >=4.7 && <5
+    , prettyprinter >=1.7
+    , text
+  default-language: GHC2024
+
+executable hmlc-exe
+  main-is: Main.hs
+  other-modules:
+      Paths_hmlc
+  autogen-modules:
+      Paths_hmlc
+  hs-source-dirs:
+      app
+  default-extensions:
+      OverloadedStrings
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      base >=4.7 && <5
+    , hmlc
+    , prettyprinter >=1.7
+    , text
+  default-language: GHC2024
+
+test-suite hmlc-test
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules:
+      Paths_hmlc
+  autogen-modules:
+      Paths_hmlc
+  hs-source-dirs:
+      test
+  default-extensions:
+      OverloadedStrings
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      base >=4.7 && <5
+    , hmlc
+    , prettyprinter >=1.7
+    , text
+  default-language: GHC2024
