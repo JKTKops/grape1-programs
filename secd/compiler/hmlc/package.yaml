@@ -21,11 +21,18 @@ description:         Please see the README on GitHub at <https://github.com/gith
 
 dependencies:
 - base >= 4.7 && < 5
+- containers >= 0.7
+- deepseq >= 1.5.0.0
+- filepath >= 1.5
+- monad-loops >= 0.4.3
 - prettyprinter >= 1.7
 - text
+- transformers >= 0.6
 
 language: GHC2024
-default-extensions: OverloadedStrings
+default-extensions:
+- OverloadedStrings
+- DerivingVia
 
 ghc-options:
 - -Wall

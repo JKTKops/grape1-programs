@@ -28,11 +28,22 @@ library
       Builtin.Keys
       Builtin.Prim
       Core
+      Core.Builtin
+      Core.Expr
+      Core.Ppr
       Core.Types
+      Core.Types.Subst
+      Data.Bag
       Outputable
       Panic
-      Types.Builtin
+      Types.Name.Env
       Types.Unique
+      Types.Unique.FM
+      Types.Unique.Set
+      Types.Var.Env
+      Types.Var.Set
+      Utils.Misc
+      Utils.Monad
   other-modules:
       Paths_hmlc
   autogen-modules:
@@ -41,11 +52,17 @@ library
       src
   default-extensions:
       OverloadedStrings
+      DerivingVia
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wredundant-constraints
   build-depends:
       base >=4.7 && <5
+    , containers >=0.7
+    , deepseq >=1.5.0.0
+    , filepath >=1.5
+    , monad-loops >=0.4.3
     , prettyprinter >=1.7
     , text
+    , transformers >=0.6
   default-language: GHC2024
 
 executable hmlc-exe
@@ -58,12 +75,18 @@ executable hmlc-exe
       app
   default-extensions:
       OverloadedStrings
+      DerivingVia
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       base >=4.7 && <5
+    , containers >=0.7
+    , deepseq >=1.5.0.0
+    , filepath >=1.5
     , hmlc
+    , monad-loops >=0.4.3
     , prettyprinter >=1.7
     , text
+    , transformers >=0.6
   default-language: GHC2024
 
 test-suite hmlc-test
@@ -77,10 +100,16 @@ test-suite hmlc-test
       test
   default-extensions:
       OverloadedStrings
+      DerivingVia
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       base >=4.7 && <5
+    , containers >=0.7
+    , deepseq >=1.5.0.0
+    , filepath >=1.5
     , hmlc
+    , monad-loops >=0.4.3
     , prettyprinter >=1.7
     , text
+    , transformers >=0.6
   default-language: GHC2024

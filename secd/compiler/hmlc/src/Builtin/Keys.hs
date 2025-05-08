@@ -55,20 +55,50 @@ mkPreludeTyConKey :: Int -> Unique
 mkPreludeTyConKey = mkUniqueInt '2'
 
 mkPreludeDataConKey :: Int -> Unique
-mkPreludeDataConKey = mkUniqueInt '3'
+mkPreludeDataConKey i = mkUniqueInt '3' (2*i)
 
+{- Note [Keys for Many Things]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Some primitive keys are actually keys for multiple things which need
+separate keys. For example, the key for a dataconstructor is actually two
+keys: one for the datacon itself, and another for its worker.
+Therefore, some mk...Key functions allocate many keys per input value.
 
+To get from the allocated key to its friend(s), use unsafeIncPrimKey
+and unsafeStepPrimKey.
+-}
+
+-- | Increment the value of a 'Unique'. See Note [Keys for Many Things].
+-- DO NOT use this to generate 'Unique's on-the-fly in generic compiler code.
+unsafeIncPrimKey :: Unique -> Unique
+unsafeIncPrimKey = unsafeReconstructUnique . (+1) . getKey
+
+-- | Step the value of a 'Unique' by the given number.
+-- See Note [Keys for Many Things].
+unsafeStepPrimKey :: Int -> Unique -> Unique
+unsafeStepPrimKey n = unsafeReconstructUnique . (+n) . getKey
 
 -----------------------------------------------
 -- Known TyCon keys
 
 intTyConKey, boolTyConKey, charTyConKey, stringTyConKey,
-   ctArrowTyConKey, ttArrowTyConKey :: Unique
+   ctArrowTyConKey, ttArrowTyConKey, ccArrowTyConKey :: Unique
 
 intTyConKey          = mkPreludeTyConKey 0
 boolTyConKey         = mkPreludeTyConKey 1
 charTyConKey         = mkPreludeTyConKey 2
 stringTyConKey       = mkPreludeTyConKey 3
 
-ctArrowTyConKey      = mkPreludeTyConKey 4 -- =>
-ttArrowTyConKey      = mkPreludeTyConKey 5 -- ->
+ttArrowTyConKey      = mkPreludeTyConKey 4 -- ->
+ctArrowTyConKey      = mkPreludeTyConKey 5 -- =>
+ccArrowTyConKey      = mkPreludeTyConKey 6 -- ==>
+
+
+------------------------------------------------
+-- Known DataCon keys
+-- ~~~~~~~~~~~~~~~~~~
+
+falseDataConKey, trueDataConKey :: Unique
+falseDataConKey = mkPreludeDataConKey 0
+trueDataConKey  = mkPreludeDataConKey 1
+

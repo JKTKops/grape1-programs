@@ -1,10 +1,12 @@
 {-# LANGUAGE MagicHash, UnboxedTuples #-}
 module Types.Unique 
-  ( Unique
+  ( Unique, getKey
   , mkBuiltinUnique, mkUniqueInt, pprUnique
+  , unsafeReconstructUnique
 
     -- * Things that have Uniques
   , HasUnique(..), hasKey
+  , ComparingUniq(..)
 
     -- * UniqueSupplies
   , UniqSupply, mkSplitUniqSupply
@@ -44,7 +46,7 @@ import Control.Monad.Fix (MonadFix(..))
 -- So it'll obviously do well for us here.
 
 -- | A value that is globally unique across a whole invocation of the compiler.
-newtype Unique = Unique Int
+newtype Unique = Unique { getKey :: Int }
   -- derive Ord so that we can make sets of HasUniq things.
   deriving stock (Eq, Ord)
   deriving newtype Show
@@ -61,6 +63,14 @@ mkUnique c i = Unique $ ord c `shiftL` uNIQ_BITS .|. i
 -- or your local monad's 'MonadUnique' instance.
 mkUniqueInt :: Char -> Int -> Unique
 mkUniqueInt = mkUnique
+
+-- | Make a 'Unique' directly from an 'Int'. This is a trapdoor into 'Unique'
+-- construction, and should only be called on 'Int' values which have
+-- previously been obtained by calling 'getKey' on a real 'Unique'.
+-- Calling it on Ints that you have conjured up risks breaking the uniqueness
+-- guarantee that 'Unique's exist to provide.
+unsafeReconstructUnique :: Int -> Unique
+unsafeReconstructUnique = Unique
 
 {- Note [Unique tags]
 Every 'Unique' has a tag in its top bits that gives us a loose sense of where
@@ -98,10 +108,20 @@ unpackUnique (Unique u) = (tag, i) where
   tag = chr $ u `shiftR` uNIQ_BITS
   i   = u .&. uNIQ_MASK
 
+-- | Things that have 'Unique's.
 class HasUnique a where
   getUnique :: a -> Unique
 hasKey :: HasUnique a => a -> Unique -> Bool
 x `hasKey` k = getUnique x == k
+
+-- | A newtype whose 'Eq' and 'Ord' instances compare by 'Unique'.
+-- Any type which is an instance of 'HasUnique' can derive Eq and Ord
+-- via 'ComparingUniq' for free.
+newtype ComparingUniq a = CU a
+instance HasUnique a => Eq (ComparingUniq a) where
+  (CU x) == (CU y) = getUnique x == getUnique y
+instance HasUnique a => Ord (ComparingUniq a) where
+  (CU x) `compare` (CU y) = getUnique x `compare` getUnique y
 
 -- | Unique Supply
 --
@@ -234,6 +254,8 @@ class Monad m => MonadUnique m where
 
 instance MonadUnique UniqSM where
   getUniqueSupplyM = getUs
+  getUniqueM = getUniqueUs
+  getUniquesM = getUniques
 
 showUnique :: Unique -> String
 showUnique u = tag : base62repr untagged where

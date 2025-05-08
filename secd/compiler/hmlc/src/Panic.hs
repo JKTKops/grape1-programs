@@ -12,7 +12,7 @@ data HmlcException
 
 instance Exception HmlcException
 
-panic :: T.Text -> a
+panic :: HasCallStack => T.Text -> a
 panic msg = throw $ Panic msg
 
 sorry :: T.Text -> a

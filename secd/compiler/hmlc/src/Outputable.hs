@@ -1,21 +1,24 @@
 module Outputable
   ( -- * class
-    Outputable (..)
+    Outputable(..)
+
+    -- * Outputting Binders more specifically
+  , OutputableBinder(..), BindingSite(..)
 
     -- * 'Doc's, styles, and contexts
   , Doc, DocContext(DocContext), PprStyle(..), Depth(..)
   , isPprUser, isPprDump, isPprCode
 
     -- * Tools for constructing docs and constant docs
-  , text
+  , char, text, empty
   , enlisted, tupled
   , parens, brackets, braces, angles, quotes, doubleQuotes, align, group
   , parensIf, semi, comma, colon, dcolon, space, equals, dot, vbar
   , arrow, larrow, darrow, lambda, lparen, rparen, lbrace, rbrace
   , lbrack, rbrack, underscore, line, emptyDoc
-  , plural, surround, punctuate, hsep, vsep, fillSep, sep, hcat, vcat
-  , fillCat, cat
-  , concatWith, (<+>)
+  , plural, surround, punctuate, hsep, vsep, fsep, sep, hcat, vcat
+  , fcat, cat
+  , concatWith, (<+>), ($$), pprWithCommas
 
     -- * Manipulating indentation
   , indent, nest, hang
@@ -177,8 +180,14 @@ liftPT pt = liftFPT (pt . runIdentity) . Identity
 liftBinPT :: (PDoc -> PDoc -> PDoc) -> (Doc -> Doc -> Doc)
 liftBinPT p = \x y -> Doc $ \ctx -> p (runDoc x ctx) (runDoc y ctx)
 
+char :: Char -> Doc
+char = ppr
+
 text :: Text -> Doc
 text = ppr
+
+empty :: Doc
+empty = mempty
 
 class Outputable a where
   ppr :: a -> Doc
@@ -196,7 +205,7 @@ tupled = liftFPT P.tupled
 parens, brackets, braces, quotes, doubleQuotes, angles,
   align, group :: Doc -> Doc
 parens   = liftPT P.parens
-brackets = liftPT P.parens
+brackets = liftPT P.brackets
 braces   = liftPT P.braces
 quotes   = liftPT P.squotes
 doubleQuotes = liftPT P.dquotes
@@ -247,19 +256,22 @@ instance Monoid Doc where
 (<+>) :: Doc -> Doc -> Doc
 (<+>) = liftBinPT (P.<+>)
 
+($$) :: Doc -> Doc -> Doc
+x $$ y = x <> inj (P.flatAlt P.line mempty) <> y
+
 concatWith :: Foldable t => (Doc -> Doc -> Doc) -> t Doc -> Doc
 concatWith f td
   | null td   = mempty
   | otherwise = foldr1 f td
 
-hsep, vsep, fillSep, sep, hcat, vcat, fillCat, cat :: [Doc] -> Doc
+hsep, vsep, fsep, sep, hcat, vcat, fcat, cat :: [Doc] -> Doc
 hsep = liftFPT P.hsep
 vsep = liftFPT P.vsep
-fillSep = liftFPT P.fillSep
+fsep = liftFPT P.fillSep
 sep  = liftFPT P.sep
 hcat = liftFPT P.hcat
 vcat = liftFPT P.vcat
-fillCat = liftFPT P.fillCat
+fcat = liftFPT P.fillCat
 cat  = liftFPT P.cat
 
 punctuate :: Doc -> [Doc] -> [Doc]
@@ -267,6 +279,9 @@ punctuate punc = go where
   go [] = []
   go [d] = [d]
   go (d : ds) = (d <> punc) : go ds
+
+pprWithCommas :: (a -> Doc) -> [a] -> Doc
+pprWithCommas p xs = hsep $ punctuate comma $ map p xs
 
 plural :: (Num amount, Eq amount)
        => doc -> doc -> amount -> doc
@@ -276,8 +291,6 @@ plural one many n
 
 surround :: Doc -> Doc -> Doc -> Doc
 surround x l r = l <> x <> r
-
-
 
 ---------------------------------------------------------------------
 ------ Instances
@@ -319,3 +332,23 @@ instance Outputable PprStyle where
   ppr (PprUser {}) = text "user-style"
   ppr (PprCode {}) = text "code-style"
   ppr (PprDump {}) = text "dump-style"
+
+-----------------------------------------------------------
+-- Outputting binders
+-- ~~~~~~~~~~~~~~~~~~
+
+class Outputable a => OutputableBinder a where
+  pprBinder :: BindingSite -> a -> Doc
+  pprBinder _b x = ppr x
+
+  pprPrefixOcc, pprInfixOcc :: a -> Doc
+
+-- | 'BindingSite' is used to tell 'OutputableBinder' instances which
+-- language construct bound the identifier. This may change how much
+-- info it wants to print.
+data BindingSite
+  = LambdaBind  -- ^ The x in   (\x. e)
+  | CaseBind    -- ^ The x in   case scrut of x { (y,z) -> ... }
+  | CasePatBind -- ^ The y,z in case scrut of x { (y,z) -> ... }
+  | LetBind     -- ^ The x in   (let x = rhs in e)
+  deriving Eq

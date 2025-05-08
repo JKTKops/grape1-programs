@@ -1,16 +1,22 @@
-module Core.Types where
+module Core.Types (module Core.Types) where
 
-import Types.Unique (Unique, HasUnique(..))
+import Builtin.Keys (ttArrowTyConKey)
+
+import Core.Types.Subst
+
+import Types.Unique (Unique, HasUnique(..), ComparingUniq(..))
+import Types.Unique.FM
 import Outputable
 import Panic
 
+import Data.Maybe (isJust)
 import Data.Text qualified as T
-import Builtin.Keys (ttArrowTyConKey)
+import GHC.Stack (HasCallStack)
 
-data Name = Name {
-    name_text :: T.Text,
-    name_sort :: NameSort,
-    name_uniq :: {-# UNPACK #-} !Unique
+data Name = Name
+  { name_text :: T.Text
+  , name_sort :: NameSort
+  , name_uniq :: {-# UNPACK #-} !Unique
   }
 
 instance Outputable Name where
@@ -38,13 +44,20 @@ instance Outputable NameSort where
   ppr WiredIn   = text "wired-in"
   ppr Builtin{} = text "builtin"
 
+class HasName a where
+  getName :: a -> Name
+
+instance HasName Name where
+  getName = id
+
 mkInternalName :: T.Text -> Unique -> Name
 mkInternalName t u = Name{name_text=t, name_sort=Internal, name_uniq=u}
 
 -- | A thing which can be typechecked.
 data TypedThing
   = AnId Id
-  | ATyCon TyCon
+  | ADataCon DataCon
+  | ATyCon   TyCon
 
 ---------------- synonyms
 
@@ -133,6 +146,15 @@ instance Outputable Var where
 instance HasUnique Var where
   getUnique = var_uniq
 
+instance HasName Var where
+  getName = var_name
+
+instance Eq Var where
+  v1 == v2 = var_uniq v1 == var_uniq v2
+
+instance Ord Var where
+  v1 `compare` v2 = var_uniq v1 `compare` var_uniq v2
+
 mkTyVar :: Name -> Kind -> TyVar
 mkTyVar n k = TyVar{var_name=n, var_uniq=name_uniq n, var_kind_=k}
 
@@ -152,6 +174,8 @@ instance Outputable KeepAlive where
 -- This type will surely grow.
 data IdDetails
   = VanillaId
+  | DataConWorkId
+  | DataConFunId
 
 -- | Identifier information
 --
@@ -240,15 +264,9 @@ instance Outputable Type where
       -- Gather up the "spine" of foralls and print them all together.
       -- Really, we should make some effort to rename bound variables to keep
       -- them pretty, but I'm not going to bother for now.
-      | (tvs, ty') <- splitForAllTy ty
+      | (tvs, ty') <- splitForAllTys ty
       = parensIf (p > 6) $
           text "forall" <+> hsep (map ppr tvs) <> dot <+> go 6 ty'
-
-splitForAllTy :: Type -> ([TyVar], Type)
-splitForAllTy (ForAllTy tv ty) =
-  let (tvs, ty') = splitForAllTy ty
-  in (tv:tvs, ty')
-splitForAllTy other = ([], other)
 
 mkTyVarTy :: TyVar -> Type
 mkTyVarTy tv = assert (isTyVar tv) $ TyVarTy tv
@@ -299,7 +317,7 @@ tyConAppFunTy_maybe tc tys
 
 tyConAppFun_maybe :: TyCon -> [a] -> Maybe (a, a)
 tyConAppFun_maybe tc args
-  | tycon_uniq tc == ttArrowTyConKey = fun_case
+  | tyConUniq tc == ttArrowTyConKey = fun_case
   | otherwise = Nothing
   where
     fun_case
@@ -308,36 +326,214 @@ tyConAppFun_maybe tc args
       | otherwise
       = Nothing
 
+-- | Decompose a function type into its argument and return types,
+-- panicking if that is not possible.
+splitFunTy :: Type -> (Type, Type)
+splitFunTy ty = maybe (panic "splitFunTy") id $ splitFunTy_maybe ty
+
+-- | Attempt to decompose a function type into its argument and return types.
+splitFunTy_maybe :: Type -> Maybe (Type, Type)
+splitFunTy_maybe ty
+  | FunTy arg res <- coreFullView ty = Just (arg, res)
+  | otherwise                        = Nothing
+
+splitFunTys :: Type -> ([Type], Type)
+splitFunTys ty = split [] ty ty
+  where
+    split args _    (FunTy arg res) = split (arg : args) res res
+    split args orig ty1 | Just ty2 <- coreView ty1 = split args orig ty2
+    split args orig _               = (reverse args, orig)
+
+splitForAllTys :: Type -> ([TyVar], Type)
+splitForAllTys ty = split [] ty
+  where
+    split tvs (ForAllTy tv ty') = split (tv : tvs) ty'
+    split tvs other = (reverse tvs, other)
+
+
+-- | Try to get the type variable under a 'Type', and panic if it isn't
+-- a type variable type.
+getTyVar :: HasCallStack => Type -> TyVar
+getTyVar ty = maybe (panic "getTyVar") id (getTyVar_maybe ty)
+
+-- | Try to get the type variable under a 'Type'.
+getTyVar_maybe :: Type -> Maybe TyVar
+getTyVar_maybe = repGetTyVar_maybe . coreFullView
+
+-- | Try to get the type variable under a 'Type', without expanding synonyms.
+repGetTyVar_maybe :: Type -> Maybe TyVar
+repGetTyVar_maybe (TyVarTy tv) = Just tv
+repGetTyVar_maybe _            = Nothing
+
+isTyVarTy :: Type -> Bool
+isTyVarTy ty = isJust (getTyVar_maybe ty)
+
+-- coreView: Taken from GHC.
+-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+coreView :: Type -> Maybe Type
+-- ^ This function strips off the /top layer only/ of a type synonym
+-- application (if any) its underlying representation type.
+-- Returns 'Nothing' if there is nothing to look through.
+--
+-- This function does not look through type family applications.
+--
+-- By being non-recursive and inlined, this case analysis gets efficiently
+-- joined onto the case analysis that the caller is already doing.
+coreView (TyConApp tc tys) = expandSynTyConApp_maybe tc tys
+coreView _                 = Nothing
+-- See Note [Inlining coreView].
+{-# INLINE coreView #-}
+
+coreFullView, core_full_view :: Type -> Type
+-- ^ Iterates 'coreView' until there is no more to synonym to expand.
+-- NB: coreFullView is non-recursive and can be inlined;
+--     core_full_view is the recursive one
+-- See Note [Inlining coreView].
+coreFullView ty@(TyConApp tc _)
+  | isSynonymTyCon tc = core_full_view ty
+coreFullView ty = ty
+{-# INLINE coreFullView #-}
+
+core_full_view ty
+  | Just ty' <- coreView ty = core_full_view ty'
+  | otherwise               = ty
+
+-----------------------------------------------
+-- | @expandSynTyConApp_maybe tc tys@ expands the RHS of type synonym @tc@
+-- instantiated at arguments @tys@, or returns 'Nothing' if @tc@ is not a
+-- synonym.
+expandSynTyConApp_maybe :: TyCon -> [Type] -> Maybe Type
+{-# INLINE expandSynTyConApp_maybe #-}
+-- This INLINE will inline the call to expandSynTyConApp_maybe in coreView,
+-- which will eliminate the allocation Just/Nothing in the result
+-- Don't be tempted to make `expand_syn` (which is NOINLINE) return the
+-- Just/Nothing, else you'll increase allocation
+expandSynTyConApp_maybe tc arg_tys
+  | Just (tvs, rhs) <- synTyConDefn_maybe tc
+  , arg_tys `saturates` tyConArity tc
+  = Just $! (expand_syn tvs rhs arg_tys)
+    -- Why $! ?
+    -- Every client of this will evaluate the (expand_syn ...) thunk, so it's
+    -- better to just not build it. That said, this function is marked INLINE,
+    -- and the client context should be enough for GHC to avoid thunk
+    -- construction anyway.
+  | otherwise
+  = Nothing
+
+saturates :: [Type] -> Arity -> Bool
+saturates _       0 = True
+saturates []      _ = False
+saturates (_:tys) n = assert (n >= 0) $ saturates tys (n-1)
+                       -- Arities are always positive; the assertion just checks
+                       -- that, to avoid an ininite loop in the bad case
+
+-- | A helper for 'expandSynTyConApp_maybe' to avoid inlining this cold path
+-- into call-sites.
+--
+-- Precondition: the call is saturated or over-saturated;
+--               i.e. length tvs <= length arg_tys
+expand_syn :: [TyVar]  -- ^ the variables bound by the synonym
+           -> Type     -- ^ the RHS of the synonym
+           -> [Type]   -- ^ the type arguments the synonym is instantiated at.
+           -> Type
+{-# NOINLINE expand_syn #-} -- We never want to inline this cold-path.
+
+expand_syn tvs rhs arg_tys
+  -- No substitution necessary if either tvs or tys is empty
+  -- This is both more efficient, and steers clear of an infinite
+  -- loop; see Note [Care using synonyms to compress types]
+  | null arg_tys  = assert (null tvs) rhs
+  | null tvs      = mkAppTys rhs arg_tys
+  | otherwise     = go empty_subst tvs arg_tys
+  where
+    empty_subst = mkEmptySubst in_scope
+    in_scope = mkInScopeSet $ shallowTyVarsOfTypes arg_tys
+      -- The free vars of 'rhs' should all be bound by 'tenv',
+      -- so we only need the free vars of tys
+      -- See also Note [The substitution invariant] in GHC.Core.TyCo.Subst.
+
+    go subst [] tys
+      | null tys  = rhs'  -- Exactly Saturated
+      | otherwise = mkAppTys rhs' tys
+          -- Its important to use mkAppTys, rather than (foldl AppTy),
+          -- because the function part might well return a
+          -- partially-applied type constructor; indeed, usually will!
+      where
+        rhs' = substTy subst rhs
+
+    go subst (tv:tvs') (ty:tys) = go (extendTvSubst subst tv ty) tvs' tys
+
+    go _ (_:_) [] = panic "expand_syn" -- (ppr tvs $$ ppr rhs $$ ppr arg_tys)
+                   -- Under-saturated, precondition failed
+
+{- Note [Inlining coreView]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+It is very common to have a function
+
+  f :: Type -> ...
+  f ty | Just ty' <- coreView ty = f ty'
+  f (TyVarTy ...) = ...
+  f ...           = ...
+
+If f is not otherwise recursive, the initial call to coreView
+causes f to become recursive, which kills the possibility of
+inlining. Instead, for non-recursive functions, we prefer to
+use coreFullView, which guarantees to unwrap top-level type
+synonyms. It can be inlined and is efficient and non-allocating
+in its fast path. For this to really be fast, all calls made
+on its fast path must also be inlined, linked back to this Note.
+
+Note [Care using synonyms to compress types]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Using a synonym to compress a type has a tricky wrinkle. Consider
+(in GHC terms) coreView applied to (TyConApp LiftedRep [])
+
+* coreView expands the LiftedRep synonym:
+     type LiftedRep = BoxedRep Lifted
+
+* Danger: we might apply the empty substitution to the RHS of the
+  synonym.  And substTy calls mkTyConApp BoxedRep [Lifted]. And
+  mkTyConApp compresses that back to LiftedRep.  Loop!
+
+* Solution: in expandSynTyConApp_maybe, don't call substTy for nullary
+  type synonyms.  That's more efficient anyway.
+-}
+
+type Arity = Int
 data TyCon =
   TyCon 
-    { tycon_uniq    :: {-# UNPACK #-} !Unique -- ^ must match unique of name
-    , tycon_name    :: !Name
-    , tycon_binders :: [TyVar] -- ^ Must all be TyVars.
-    , tycon_reskind :: !Kind -- ^ The result kind of the tycon.
-                             -- Right now, this can only be 'Star'.
-    , tycon_kind    :: !Kind -- ^ Cached kind of the tycon
-    , tycon_arity   :: !Int  -- ^ Cached @length tycon_binders@.
-    , tycon_nullaryApp :: !Type -- ^ Cached TyConApp tycon [].
-    , tycon_details :: !TyConDetails
+    { tyConUniq    :: {-# UNPACK #-} !Unique -- ^ must match unique of name
+    , tyConName    :: !Name
+    , tyConBinders :: [TyVar]  -- ^ Must all be TyVars.
+    , tyConResKind :: !Kind    -- ^ The result kind of the tycon.
+                                -- Right now, this can only be 'Star'.
+    , tyConKind    :: !Kind    -- ^ Cached kind of the tycon
+    , tyConArity   :: !Arity   -- ^ Cached @length tycon_binders@.
+    , tyConNullaryApp :: !Type -- ^ Cached TyConApp tycon [].
+    , tyConDetails :: !TyConDetails
     }
+    deriving (Eq, Ord) via ComparingUniq TyCon
 
 instance Outputable TyCon where
-  ppr tc = ppr (tycon_name tc)
+  ppr tc = ppr (tyConName tc)
 
 instance HasUnique TyCon where
-  getUnique = tycon_uniq
+  getUnique = tyConUniq
+
+instance HasName TyCon where
+  getName = tyConName
 
 mkTyCon :: Name -> [TyVar] -> TyConDetails -> TyCon
 mkTyCon name vars details =
   let tc = TyCon
-        { tycon_uniq    = name_uniq name
-        , tycon_name    = name
-        , tycon_binders = binders
-        , tycon_reskind = Star
-        , tycon_kind    = mkTyConKind vars Star
-        , tycon_arity   = length vars
-        , tycon_nullaryApp = TyConApp tc []
-        , tycon_details = details
+        { tyConUniq    = name_uniq name
+        , tyConName    = name
+        , tyConBinders = binders
+        , tyConResKind = Star
+        , tyConKind    = mkTyConKind vars Star
+        , tyConArity   = length vars
+        , tyConNullaryApp = TyConApp tc []
+        , tyConDetails = details
         }
   in tc
   where
@@ -347,8 +543,13 @@ mkPrimTyCon :: Name -> [TyVar] -> TyCon
 mkPrimTyCon name binders =
   mkTyCon name binders PrimTyCon
 
+mkAlgDataTyCon :: Name -> [TyVar] -> [DataCon] -> TyCon
+mkAlgDataTyCon name binders dcs =
+  mkTyCon name binders $ AlgTyCon
+    $ DataTyCon {data_cons = dcs, data_cons_size = (length dcs)}
+
 mkTyConTy :: TyCon -> Type
-mkTyConTy = tycon_nullaryApp
+mkTyConTy = tyConNullaryApp
 
 -- | Given the binders and result kind of a tycon, construct the kind.
 mkTyConKind :: [TyVar] -> Kind -> Kind
@@ -357,6 +558,31 @@ mkTyConKind vars resk = go varKinds resk
     varKinds = map var_kind_ vars
     go [] rk = rk
     go (vk:vks) rk = vk `mkArrowKind` go vks rk
+
+isAlgTyCon, isSynonymTyCon, isPrimTyCon :: TyCon -> Bool
+isAlgTyCon (TyCon{tyConDetails=AlgTyCon{}}) = True
+isAlgTyCon _                                 = False
+
+isSynonymTyCon (TyCon{tyConDetails=SynonymTyCon{}}) = True
+isSynonymTyCon _                                     = False
+
+isPrimTyCon (TyCon{tyConDetails=PrimTyCon{}}) = True
+isPrimTyCon _                                  = False
+
+-- | Extract the 'TyVar's bound by a vanilla type synonym and the
+-- corresponding (unsubstituted) right hand side.
+synTyConDefn_maybe :: TyCon -> Maybe ([TyVar], Type)
+synTyConDefn_maybe (TyCon{tyConBinders=tyvars, tyConDetails=details})
+  | SynonymTyCon {syntc_rhs = ty} <- details
+  = Just (tyvars, ty)
+  | otherwise
+  = Nothing
+
+-- | Extract the RHS of a type synonym's @type@ declaration.
+synTyConRhs_maybe :: TyCon -> Maybe Type
+synTyConRhs_maybe (TyCon{tyConDetails = details}) = case details of
+  SynonymTyCon {syntc_rhs} -> Just syntc_rhs
+  _                        -> Nothing
 
 data TyConDetails
   -- | Algebraic data type constructors, defined by
@@ -375,3 +601,236 @@ data TyConDetails
 
 
 data AlgTyConRhs
+    -- | Right hand side of a type derived from a @data@ declaration.
+    -- This includes types with no constructors.
+  = DataTyCon
+    { data_cons :: [DataCon]
+      -- ^ The data type constructors, can be empty.
+      -- INVARIANT: Kept in order of increasing tag.
+    , data_cons_size :: Int
+      -- ^ Cached (length data_cons)
+    }
+  | TupleTyCon
+    { data_con :: DataCon
+      -- someday, add tuple_sort :: TupleSort, which is
+      -- boxed or unboxed. (Or maybe do this sooner, so we can have
+      -- the constraint tuple.)
+    }
+    -- | TyCon derived from a @newtype@ declaration.
+  | NewTyCon
+    { data_con :: DataCon
+      -- ^ The unique newtype constructor.
+    , nt_rhs :: Type
+      -- ^ Cached argument type of the constructor (i.e. the repr type).
+    }
+
+instance Outputable AlgTyConRhs where
+  ppr (DataTyCon{data_cons}) =
+    pprDeeperList (hsep . punctuate (space <> vbar)) $ map ppr data_cons
+  ppr (TupleTyCon{data_con}) = ppr data_con
+  ppr (NewTyCon  {data_con}) = ppr data_con
+
+tyConRhsDataCons :: AlgTyConRhs -> [DataCon]
+tyConRhsDataCons (DataTyCon{data_cons}) = data_cons
+tyConRhsDataCons (TupleTyCon{data_con}) = [data_con]
+tyConRhsDataCons (NewTyCon  {data_con}) = [data_con]
+
+tyConDataCons :: TyCon -> [DataCon]
+tyConDataCons tc = maybe [] id (tyConDataCons_maybe tc)
+
+tyConDataCons_maybe :: TyCon -> Maybe [DataCon]
+tyConDataCons_maybe (TyCon{tyConDetails = details})
+  | AlgTyCon{algtc_rhs = rhs} <- details
+  = Just $ tyConRhsDataCons rhs
+tyConDataCons_maybe _ = Nothing
+
+{-
+Data Constructors
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+'DataCon': All about data constructors.
+Note: "Worker functions" are not like GHC's "wrapper functions."
+We will also have wrapper functions in the future.
+
+Note [Data Constructor Naming]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Each data constructor C has at least two, and up to three,
+Names associated with it:
+
+                           text     namespace  name of?
+----------------------------------------------------------
+  1. The "data con itself"    C     DataName    DataCon
+  2. The datacon worker       C     VarName     Id
+  3. The datacon function     $FC   VarName     Id
+
+Every non-nullary data constructor defined by @data@
+recieves a datacon function.
+
+It is not necessary to give every data constructor a function,
+but I have set up this infrastructure very early in the days of the compiler
+and I believe that this will simplify the code generation
+(otherwise, a function would need to be generated on-the-fly at some point
+and then eliminated by CSE with all the other sites that needed a function.
+In the future, this would not be able to cross modules either, which seems
+to be a limitation of GHC.)
+
+Each of these three names has a distinct Unique. The output of the source
+code renamer will always be the first name, and the typechecker will translate
+it to the worker datacon.
+
+Note [Data constructor workers and functions]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For a @data@-declared type, the worker datacon is the actual data constructor
+and has no unfolding.
+When the Core2ANF pass encounters a saturated worker datacon, it translates
+to the appropriate allocation directly. When it encounters an unsaturated
+worker datacon, it is translated to a use of the function.
+**This is the only way for a datacon function reference to appear.**
+
+Newtypes don't get constructor functions.
+The datacon worker is semantically the identity function.
+Unfortunately, the type of the datacon and the type of the identity function
+are different, so we cannot inline the datacon,
+as our program would become ill-typed. This will be fixed in the future
+when we switch to System FC as the core language and utilise coercions.
+When the Core2ANF pass encounters the datacon worker,
+it is simply removed if possible.
+If not possible (consider, e.g. @map MkN [...]@) then it is replaced by 'id'.
+
+Note [The future: constructor wrappers]
+
+As we add more powerful type system features, especially GADT syntax,
+and field unpacking, it will become necessary to have a "wrapper" that
+translates between the source type of the datacon and the internal
+representation type. GHC does this when those two types differ.
+We currently have no need for this. The wrapper type and the function
+type may very well be different, but the worker type and the function
+type will always be the same.
+-}
+
+type ConTag = Int
+
+data DataCon =
+  DataCon
+    { dcName :: Name
+    , dcUniq :: Unique -- ^ Cached from Name
+    , dcTag  :: ConTag -- ^ This constructor's tag; orders 'DataCon's.
+
+    -- Fields about the type
+    -- ~~~~~~~~~~~~~~~~~~~~~
+
+      -- | Universally quantified type vars in the type of this 'DataCon'.
+      -- If this is [a,b,c] then the return type of the data constructor
+      -- is exactly (T a b c).
+      -- This might not be the same as the 'tycon_binders' in the 'TyCon'.
+    , dcUnivTyVars :: [TyVar]
+      -- | The type of the data constructor.
+      -- This is also the type of the function, if it exists.
+    , dcType  :: Type   -- a -> T a b
+      -- | Result type of the data constructor.
+    , dcTycon :: TyCon  -- T a b
+
+      -- | Argument types (decomposed from dc_type).
+      -- INVARIANT: Must agree with dc_type!
+    , dcArgTys :: [Type]
+      -- | Result type (decomposed from dc_type).
+      -- INVARIANT: Must agree with dc_type!
+    , dcResTy  :: Type
+      -- | Cached datacon arity.
+    , dcArity  :: Arity  -- INVARIANT: dc_arity == length dc_arg_tys
+
+    -- Fields about the record-ness of this constructor
+    -- TODO: Add this when we add record syntax
+    -- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    -- , dc_fields :: [FieldLabel]
+
+    -- Fields about the data constructor worker
+    -- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+      -- | The curried worker function that corresponds to the constructor.
+      -- When the code generator sees this saturated, it allocates.
+    , dcWorkId :: Id
+
+    -- Fields about the data constructor function
+    -- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    , dcFunId :: Maybe Id
+    }
+    deriving (Eq, Ord) via ComparingUniq DataCon
+
+instance HasName DataCon where getName = dcName
+instance HasUnique DataCon where getUnique = dcUniq
+instance Outputable DataCon where
+  ppr DataCon{dcName, dcTag, dcType} =
+    viewPprDebug $ \debug ->
+      if debug
+        then ppr dcName <> lbrack <> hsep 
+          [ppr dcTag <> comma, ppr dcType] <> rbrack
+        else ppr dcName
+
+mkDataCon :: Name     -- ^ Name for this DataCon
+          -> ConTag   -- ^ Tag for this DataCon
+          -> Type     -- ^ This DataCon's type
+          -> Id       -- ^ An Id for the datacon worker
+          -> Maybe Id -- ^ An Id for the datacon function, if one is wanted
+          -> TyCon    -- ^ The TyCon to which this DataCon belongs
+          -> DataCon
+mkDataCon n tag ty wid fid tc = DataCon
+  { dcName = n
+  , dcUniq = getUnique n
+  , dcTag  = tag
+  
+  , dcUnivTyVars = qvars
+  , dcType       = ty
+  , dcArgTys     = argTys
+  , dcResTy      = resTy
+  , dcArity      = length argTys
+
+  , dcTycon  = tc
+  , dcWorkId = wid
+  , dcFunId  = fid
+  }
+  where
+    (qvars, tau) = splitForAllTys ty
+    (argTys, resTy) = splitFunTys tau
+
+data Literal
+  = LitChar Char
+  | LitNumber !Integer -- ^ Numeric literal
+
+    -- note in the future that LitNumber will get much more interesting as it
+    -- becomes possible to write polymorphic numeric literals.
+    -- I'm not certain how we'll want to represent Integer, when we add that,
+    -- but probably as the construction of the appropriate Integer data value
+    -- rather than as a Literal.
+
+  | LitString !T.Text -- ^ String literal; we can emit constant strings today
+                      -- but have no idea how they should be manipulated.
+  | LitRubbish  -- ^ A nonsense value. Its type is @forall a. a@.
+  deriving (Eq, Ord)
+
+instance Outputable Literal where
+  ppr = pprLit
+
+pprLit :: Literal -> Doc
+pprLit (LitChar c)   = quotes $ char c
+pprLit (LitNumber i) = ppr i
+pprLit (LitString t) = doubleQuotes $ text t
+pprLit (LitRubbish)  = text "RUBBISH"
+
+{-
+Note [Constructor tag allocation]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+When typechecking, we need to allocate constructor tags to constructors.
+They are allocated based on the order of constructors in the data_cons field
+of TyCon, with the first constructor getting fIRST_TAG.
+
+-}
+mkTyConTagMap :: TyCon -> UniqFM Name ConTag
+mkTyConTagMap tycon =
+  listToUFM $ map getName (tyConDataCons tycon) `zip` [fIRST_TAG ..]
+
+-- Start tags at 1. Someday these will be actual tags on a pointer,
+-- and you can't tag a pointer with zero.
+fIRST_TAG :: ConTag
+fIRST_TAG = 1
